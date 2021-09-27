@@ -5,7 +5,6 @@ JOB_NAME?="$@"
 # IPv6 only network, set appropriately to skip related tests.
 KIND_IPV4_SUPPORT?=false
 KIND_IPV6_SUPPORT?=false
-WHAT="Should validate ICMP connectivity to an external gateway\'s loopback address via a pod with external gateway annotations enabled"
 
 .PHONY: install-kind
 install-kind:
