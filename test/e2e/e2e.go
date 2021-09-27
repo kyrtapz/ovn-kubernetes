@@ -1312,8 +1312,6 @@ spec:
 var _ = ginkgo.Describe("e2e non-vxlan external gateway and update validation", func() {
 	const (
 		svcname             string = "multiple-novxlan-externalgw"
-		exGWRemoteIpAlt1    string = "10.249.3.1"
-		exGWRemoteIpAlt2    string = "10.249.4.1"
 		ovnNs               string = "ovn-kubernetes"
 		ovnWorkerNode       string = "ovn-worker"
 		ovnHaWorkerNode     string = "ovn-control-plane2"
@@ -1324,6 +1322,8 @@ var _ = ginkgo.Describe("e2e non-vxlan external gateway and update validation", 
 	)
 	var (
 		haMode bool
+		exGWRemoteIpAlt1    string
+		exGWRemoteIpAlt2    string
 	)
 	f := framework.NewDefaultFramework(svcname)
 
@@ -1352,6 +1352,13 @@ var _ = ginkgo.Describe("e2e non-vxlan external gateway and update validation", 
 				framework.Failf("Expected container %s running on %s error %v", ovnContainer, ovnHaWorkerNode, err)
 			}
 		}
+
+		exGWRemoteIpAlt1    = "10.249.3.1"
+		exGWRemoteIpAlt2    = "10.249.4.1"
+		if IsIPv6Cluster(f.ClientSet) {
+			exGWRemoteIpAlt1    = "fc00:f853:ccd:e793::1"
+			exGWRemoteIpAlt2    = "fc00:f853:ccd:e794::1"
+		}
 	})
 
 	ginkgo.AfterEach(func() {
@@ -1372,21 +1379,40 @@ var _ = ginkgo.Describe("e2e non-vxlan external gateway and update validation", 
 
 		var pingSrc string
 		var validIP net.IP
-		exGWRemoteCidrAlt1 := fmt.Sprintf("%s/24", exGWRemoteIpAlt1)
-		exGWRemoteCidrAlt2 := fmt.Sprintf("%s/24", exGWRemoteIpAlt2)
+
+		isIPv6Cluster := IsIPv6Cluster(f.ClientSet)
 		srcPingPodName := "e2e-exgw-novxlan-src-ping-pod"
 		command := []string{"bash", "-c", "sleep 20000"}
 		testContainer := fmt.Sprintf("%s-container", srcPingPodName)
 		testContainerFlag := fmt.Sprintf("--container=%s", testContainer)
+		// non-ha ci mode runs a set of kind nodes prefixed with ovn-worker
+		ciWorkerNodeSrc := ovnWorkerNode
+		if haMode {
+			// ha ci mode runs a named set of nodes with a prefix of ovn-control-plane
+			ciWorkerNodeSrc = ovnHaWorkerNode
+		}
+
 		// start the container that will act as an external gateway
 		_, err := runCommand("docker", "run", "-itd", "--privileged", "--network", externalContainerNetwork, "--name", gwContainerNameAlt1, "centos")
 		if err != nil {
 			framework.Failf("failed to start external gateway test container %s: %v", gwContainerNameAlt1, err)
 		}
 		// retrieve the container ip of the external gateway container
-		exGWIpAlt1, _ := getContainerAddressesForNetwork(gwContainerNameAlt1, externalContainerNetwork)
+		alt1IPv4, alt1IPv6 := getContainerAddressesForNetwork(gwContainerNameAlt1, externalContainerNetwork)
 		if err != nil {
 			framework.Failf("failed to start external gateway test container: %v", err)
+		}
+		nodeIPv4, nodeIPv6 := getContainerAddressesForNetwork(ciWorkerNodeSrc, externalContainerNetwork)
+
+		exGWRemoteCidrAlt1 := fmt.Sprintf("%s/24", exGWRemoteIpAlt1)
+		exGWRemoteCidrAlt2 := fmt.Sprintf("%s/24", exGWRemoteIpAlt2)
+		exGWIpAlt1 := alt1IPv4
+		nodeIP := nodeIPv4
+		if isIPv6Cluster {
+			exGWIpAlt1 = alt1IPv6
+			exGWRemoteCidrAlt1 = fmt.Sprintf("%s/64", exGWRemoteIpAlt1)
+			exGWRemoteCidrAlt2 = fmt.Sprintf("%s/64", exGWRemoteIpAlt2)
+			nodeIP = nodeIPv6
 		}
 
 		// annotate the test namespace
@@ -1398,14 +1424,7 @@ var _ = ginkgo.Describe("e2e non-vxlan external gateway and update validation", 
 		}
 		framework.Logf("Annotating the external gateway test namespace to a container gw: %s ", exGWIpAlt1)
 		framework.RunKubectlOrDie(f.Namespace.Name, annotateArgs...)
-		// non-ha ci mode runs a set of kind nodes prefixed with ovn-worker
-		ciWorkerNodeSrc := ovnWorkerNode
-		if haMode {
-			// ha ci mode runs a named set of nodes with a prefix of ovn-control-plane
-			ciWorkerNodeSrc = ovnHaWorkerNode
-		}
-		nodeIP, _ := getContainerAddressesForNetwork(ciWorkerNodeSrc, externalContainerNetwork)
-		framework.Logf("the pod side node is %s and the source node ip is %s", ciWorkerNodeSrc, nodeIP)
+
 		podCIDR, err := getNodePodCIDR(ciWorkerNodeSrc)
 		if err != nil {
 			framework.Failf("Error retrieving the pod cidr from %s %v", ciWorkerNodeSrc, err)
@@ -1452,9 +1471,10 @@ var _ = ginkgo.Describe("e2e non-vxlan external gateway and update validation", 
 			framework.Failf("failed to start external gateway test container %s: %v", gwContainerNameAlt2, err)
 		}
 		// retrieve the container ip of the external gateway container
-		exGWIpAlt2, _ := getContainerAddressesForNetwork(gwContainerNameAlt2, externalContainerNetwork)
-		if err != nil {
-			framework.Failf("failed to start external gateway test container: %v", err)
+		alt2IPv4, alt2IPv6 := getContainerAddressesForNetwork(gwContainerNameAlt2, externalContainerNetwork)
+		exGWIpAlt2 := alt2IPv4
+		if isIPv6Cluster {
+			exGWIpAlt2 = alt2IPv6
 		}
 
 		// override the annotation in the test namespace with the new gateway
