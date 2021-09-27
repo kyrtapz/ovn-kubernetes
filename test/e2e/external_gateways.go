@@ -152,7 +152,7 @@ var _ = ginkgo.Describe("e2e non-vxlan external gateway through a gateway pod", 
 			pingSync.Wait()
 			tcpDumpSync.Wait()
 		},
-		ginkgotable.Entry("ipv4", &addressesv4, "icmp"),
+		//ginkgotable.Entry("ipv4", &addressesv4, "icmp"),
 		ginkgotable.Entry("ipv6", &addressesv6, "icmp6"))
 
 	ginkgotable.DescribeTable("Should validate TCP/UDP connectivity to an external gateway's loopback address via a pod with external gateway annotations enabled",
