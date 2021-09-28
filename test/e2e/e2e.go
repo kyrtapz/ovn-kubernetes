@@ -677,9 +677,9 @@ var _ = ginkgo.Describe("e2e control plane", func() {
 var _ = ginkgo.Describe("test e2e pod connectivity to host addresses", func() {
 	const (
 		ovnWorkerNode string = "ovn-worker"
-		targetIP      string = "123.123.123.123"
 		svcname       string = "node-e2e-to-host"
 	)
+	var targetIP string
 
 	f := framework.NewDefaultFramework(svcname)
 
@@ -689,9 +689,15 @@ var _ = ginkgo.Describe("test e2e pod connectivity to host addresses", func() {
 	})
 
 	ginkgo.It("Should validate connectivity from a pod to a non-node host address on same node", func() {
+		targetIP = "123.123.123.123"
+		singleIPMask := "32"
+		if IsIPv6Cluster(f.ClientSet) {
+			targetIP = "2001:db8:3333:4444:CCCC:DDDD:EEEE:FFFF"
+			singleIPMask = "128"
+		}
 		// Add another IP address to the worker
 		_, err := runCommand("docker", "exec", ovnWorkerNode, "ip", "a", "add",
-			fmt.Sprintf("%s/32", targetIP), "dev", "breth0")
+			fmt.Sprintf("%s/%s", targetIP, singleIPMask), "dev", "breth0")
 		framework.ExpectNoError(err, "failed to add IP to %s", ovnWorkerNode)
 
 		// Spin up another pod that attempts to reach the previously started pod on separate nodes
@@ -1321,9 +1327,9 @@ var _ = ginkgo.Describe("e2e non-vxlan external gateway and update validation", 
 		ovnControlNode      string = "ovn-control-plane"
 	)
 	var (
-		haMode bool
-		exGWRemoteIpAlt1    string
-		exGWRemoteIpAlt2    string
+		haMode           bool
+		exGWRemoteIpAlt1 string
+		exGWRemoteIpAlt2 string
 	)
 	f := framework.NewDefaultFramework(svcname)
 
@@ -1353,11 +1359,11 @@ var _ = ginkgo.Describe("e2e non-vxlan external gateway and update validation", 
 			}
 		}
 
-		exGWRemoteIpAlt1    = "10.249.3.1"
-		exGWRemoteIpAlt2    = "10.249.4.1"
+		exGWRemoteIpAlt1 = "10.249.3.1"
+		exGWRemoteIpAlt2 = "10.249.4.1"
 		if IsIPv6Cluster(f.ClientSet) {
-			exGWRemoteIpAlt1    = "fc00:f853:ccd:e793::1"
-			exGWRemoteIpAlt2    = "fc00:f853:ccd:e794::1"
+			exGWRemoteIpAlt1 = "fc00:f853:ccd:e793::1"
+			exGWRemoteIpAlt2 = "fc00:f853:ccd:e794::1"
 		}
 	})
 
