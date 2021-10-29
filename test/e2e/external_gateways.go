@@ -904,6 +904,83 @@ func setupGatewayContainers(f *framework.Framework, nodes *v1.NodeList, gwContai
 	return addressesv4, addressesv6
 }
 
+var _ = ginkgo.Describe("e2e non-vxlan external gateway with fragmented packets", func() {
+	const (
+		svcname         string = "novxlan-externalgw-frag"
+		gwContainer     string = "gw-test-container"
+		srcPodName      string = "gw-client-frag"
+		externalUDPPort = 90
+		pktCnt          = 20
+	)
+
+	f := framework.NewDefaultFramework(svcname)
+	var gwIPV4, gwIPV6, srcIPV4, srcIPV6 string
+
+	ginkgo.BeforeEach(func() {
+		// Setup GW container with ncat listeners that reply with the request
+		gwIPV4, gwIPV6 = createClusterExternalContainer(gwContainer, externalContainerImage, []string{"-itd", "--privileged", "--network", externalContainerNetwork}, []string{})
+
+		_, err := runCommand("docker", "exec", gwContainer, "bash", "-c", fmt.Sprintf("ncat -c cat -k -u -l %d &", externalUDPPort))
+		framework.ExpectNoError(err, "failed to setup UDP listener on %s", gwContainer)
+
+		clientPod, err := createPod(f, srcPodName, "", f.Namespace.Name, []string{}, map[string]string{})
+		srcIPV4, srcIPV6 = getPodAddresses(clientPod)
+		framework.ExpectNoError(err, "Failed to create client pod %s", srcPodName)
+
+		// GW container shares the pods MTU
+		res, err := framework.RunKubectl(f.Namespace.Name, "exec", srcPodName, "--", "bash", "-c", "cat /sys/class/net/eth0/mtu")
+		framework.ExpectNoError(err, "Failed to get MTU of %s: %s", srcPodName, res)
+		res = strings.ReplaceAll(res, "\n", "")
+		podMTU, err := strconv.Atoi(res)
+		framework.ExpectNoError(err, "Failed to parse MTU %s", res)
+		_, err = runCommand("docker", "exec", gwContainer, "ip", "link", "set", "eth0", "mtu", fmt.Sprintf("%d", podMTU))
+		framework.ExpectNoError(err, "Failed to set GW MTU of %d", podMTU)
+
+		// remove the routing external annotation
+		annotateArgs := []string{
+			"annotate",
+			"namespace",
+			f.Namespace.Name,
+			"k8s.ovn.org/routing-external-gws-",
+		}
+		ginkgo.By("Resetting the gw annotation")
+		framework.RunKubectlOrDie(f.Namespace.Name, annotateArgs...)
+
+	})
+	ginkgo.AfterEach(func() {
+		deleteClusterExternalContainer(gwContainer)
+	})
+
+	ginkgotable.DescribeTable("Should validate ICMP/UDP with fragmented packets", func(protocol string, podIP, gwIP *string) {
+		if *gwIP == "" || *podIP == "" {
+			skipper.Skipf("Skipping as gwIP(%s) or podIP(%s) is not set", *gwIP, *podIP)
+		}
+
+		podName := "gw-client-frag"
+		var cmd string
+		ginkgo.By(fmt.Sprintf("Verifying connectivity to the external gateway(%s) from the pod(%s) with large %s packets > pod MTU", *gwIP, *podIP, protocol))
+
+		if protocol == "icmp" {
+			cmd = fmt.Sprintf("ping -s 1420 -c %d %s", pktCnt, *gwIP)
+		} else {
+			// Send 1420 bytes of random data, read the response and compare
+			cmd = fmt.Sprintf(`
+		base64 /dev/urandom | head -c 1420  > in.data;
+		cat in.data | nc -w1 -u %s %d > out.data;
+		cmp -s in.data out.data;`, *gwIP, externalUDPPort)
+		}
+
+		res, err := framework.RunKubectl(f.Namespace.Name, "exec", srcPodName, "--", "bash", "-c", cmd)
+
+		framework.ExpectNoError(err, "failed to run pod %s: %s", podName, res)
+	},
+		ginkgotable.Entry("UDP ipv4", "udp", &srcIPV4, &gwIPV4),
+		ginkgotable.Entry("ICMP ipv4", "icmp", &srcIPV4, &gwIPV4),
+		ginkgotable.Entry("UDP ipv6", "udp", &srcIPV6, &gwIPV6),
+		ginkgotable.Entry("ICMP ipv6", "icmp", &srcIPV6, &gwIPV6))
+
+})
+
 func reachPodFromContainer(targetAddress, targetPort, targetPodName, srcContainer, protocol string) {
 	ginkgo.By(fmt.Sprintf("Checking that %s can reach the pod", srcContainer))
 	dockerCmd := []string{"docker", "exec", srcContainer, "bash", "-c"}
