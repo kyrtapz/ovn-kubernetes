@@ -170,8 +170,7 @@ func (oc *Controller) reconcileEgressIP(old, new *egressipv1.EgressIP) (err erro
 	// the namespaceSelector and podSelector have changed. If they have changed
 	// then remove the setup for all pods which matched the old and add
 	// everything for all pods which match the new.
-	if len(ipsToAdd) == 0 &&
-		len(statusToRemove) == 0 {
+	if len(ipsToAdd) == 0 && len(statusToRemove) == 0 {
 		// Only the namespace selector changed: remove the setup for all pods
 		// matching the old and not matching the new, and add setup for the pod
 		// matching the new and which didn't match the old.
@@ -396,7 +395,7 @@ func (oc *Controller) reconcileCloudPrivateIPConfig(old, new *ocpcloudnetworkapi
 	oldCloudPrivateIPConfig, newCloudPrivateIPConfig := &ocpcloudnetworkapi.CloudPrivateIPConfig{}, &ocpcloudnetworkapi.CloudPrivateIPConfig{}
 	shouldDelete, shouldAdd := false, false
 	nodeToDelete := ""
-
+	klog.V(5).Infof("reconcileCloudPrivateIPConfig %+v %+v", old, new)
 	if old != nil {
 		oldCloudPrivateIPConfig = old
 		// We need to handle two types of deletes, A) object UPDATE where the
@@ -428,11 +427,13 @@ func (oc *Controller) reconcileCloudPrivateIPConfig(old, new *ocpcloudnetworkapi
 	}
 
 	if shouldDelete {
+		klog.V(5).Infof("reconcileCloudPrivateIPConfig should delete %s", oldCloudPrivateIPConfig.Name)
 		// There can only be one EgressIP object holding a given egress IP. If
 		// multiple objects specify the same egress IP the assignment algorithm
 		// invalidates it, hence: the following is safe.
 		egressIP, err := oc.getEgressIPFromCloudPrivateIPConfigName(oldCloudPrivateIPConfig.Name)
 		if err != nil {
+			klog.Error(err)
 			return err
 		}
 		egressIPString := cloudPrivateIPConfigNameToIPString(oldCloudPrivateIPConfig.Name)
@@ -441,6 +442,7 @@ func (oc *Controller) reconcileCloudPrivateIPConfig(old, new *ocpcloudnetworkapi
 			EgressIP: egressIPString,
 		}
 		if err := oc.deleteEgressIPAssignments(egressIP.Name, []egressipv1.EgressIPStatusItem{statusItem}, egressIP.Spec.NamespaceSelector, egressIP.Spec.PodSelector); err != nil {
+			klog.Error(err)
 			return err
 		}
 		// Deleting here means updating the object with the statuses we want to
@@ -767,14 +769,17 @@ func (oc *Controller) addPodEgressIPAssignments(name string, statusAssignments [
 func (oc *Controller) deleteAllocatorEgressIPAssignments(statusAssignments []egressipv1.EgressIPStatusItem) {
 	oc.eIPC.allocator.Lock()
 	defer oc.eIPC.allocator.Unlock()
+	klog.Infof("deleteAllocatorEgressIPAssignments")
 	for _, status := range statusAssignments {
 		if eNode, exists := oc.eIPC.allocator.cache[status.Node]; exists {
+			klog.Infof("deleteAllocatorEgressIPAssignments for %s", status.EgressIP)
 			delete(eNode.allocations, status.EgressIP)
 		}
 	}
 }
 
 func (oc *Controller) deleteEgressIPAssignments(name string, statusAssignments []egressipv1.EgressIPStatusItem, namespaceSelector, podSelector metav1.LabelSelector) error {
+	klog.Infof("deleteEgressIPAssignments for %s", name)
 	oc.deleteAllocatorEgressIPAssignments(statusAssignments)
 	namespaces, err := oc.watchFactory.GetNamespacesBySelector(namespaceSelector)
 	if err != nil {
@@ -789,6 +794,7 @@ func (oc *Controller) deleteEgressIPAssignments(name string, statusAssignments [
 }
 
 func (oc *Controller) deleteNamespaceEgressIPAssignment(name string, statusAssignments []egressipv1.EgressIPStatusItem, namespace *kapi.Namespace, podSelector metav1.LabelSelector) error {
+	klog.Infof("deleteNamespaceEgressIPAssignment for %s", name)
 	var pods []*kapi.Pod
 	var err error
 	selector, _ := metav1.LabelSelectorAsSelector(&podSelector)
