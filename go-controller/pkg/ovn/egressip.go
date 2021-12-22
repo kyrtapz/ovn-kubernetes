@@ -402,10 +402,9 @@ func (oc *Controller) reconcileCloudPrivateIPConfig(old, new *ocpcloudnetworkapi
 		// We need to handle two types of deletes, A) object UPDATE where the
 		// old egress IP <-> node assignment has been removed. This is indicated
 		// by the old object having a .status.node set and the new object having
-		// .status.node empty and the condition on the new being successful. B)
-		// object DELETE, for which the CloudPrivateIPConfig will not have a
-		// finalizer anymore
-		shouldDelete = oldCloudPrivateIPConfig.Status.Node != "" || !hasFinalizer(oldCloudPrivateIPConfig.Finalizers, cloudPrivateIPConfigFinalizer)
+		// .status.node empty and the condition on the new being successful.
+		// B) object DELETE, for which the `new` is nil
+		shouldDelete = oldCloudPrivateIPConfig.Status.Node != "" || new == nil
 		// On DELETE we need to delete the .spec.node for the old object
 		nodeToDelete = oldCloudPrivateIPConfig.Spec.Node
 	}
