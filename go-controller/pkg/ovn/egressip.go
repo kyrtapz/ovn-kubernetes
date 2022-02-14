@@ -660,6 +660,8 @@ func (oc *Controller) deleteEgressNode(egressNode *kapi.Node) error {
 	if err != nil {
 		return fmt.Errorf("unable to list egressIPs, err: %v", err)
 	}
+	oc.eIPC.assignmentRetryMutex.Lock()
+	defer oc.eIPC.assignmentRetryMutex.Unlock()
 	for _, eIP := range egressIPs.Items {
 		needsReassignment := false
 		for _, status := range eIP.Status.Items {
