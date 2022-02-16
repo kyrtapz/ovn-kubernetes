@@ -4494,7 +4494,8 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				}
 
 				assignedStatuses := fakeOvn.controller.assignEgressIPs(eIP.Name, eIP.Spec.EgressIPs)
-				gomega.Expect(assignedStatuses).To(gomega.HaveLen(0))
+				gomega.Expect(assignedStatuses).To(gomega.HaveLen(1))
+				gomega.Expect(assignedStatuses[0].Node).To(gomega.Equal(node1Name))
 				return nil
 			}
 
@@ -4554,7 +4555,9 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				}
 
 				assignedStatuses := fakeOvn.controller.assignEgressIPs(eIP.Name, eIP.Spec.EgressIPs)
-				gomega.Expect(assignedStatuses).To(gomega.HaveLen(0))
+				// Verify that assignedStatuses is still showing the original assignment
+				gomega.Expect(assignedStatuses).To(gomega.HaveLen(1))
+				gomega.Expect(assignedStatuses[0].Node).To(gomega.Equal(node1Name))
 				return nil
 			}
 
@@ -4644,7 +4647,8 @@ var _ = ginkgo.Describe("OVN master EgressIP Operations", func() {
 				}
 
 				assignedStatuses := fakeOvn.controller.assignEgressIPs(eIP.Name, eIP.Spec.EgressIPs)
-				gomega.Expect(assignedStatuses).To(gomega.HaveLen(0))
+				gomega.Expect(assignedStatuses).To(gomega.HaveLen(1))
+				gomega.Expect(assignedStatuses[0].Node).To(gomega.Equal(node1Name))
 				return nil
 			}
 
