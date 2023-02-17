@@ -37,7 +37,7 @@ func nodeHasAddress(fakeClient kubernetes.Interface, nodeName string, ipNet *net
 	Expect(err).NotTo(HaveOccurred())
 	addrs, err := util.ParseNodeHostAddresses(node)
 	Expect(err).NotTo(HaveOccurred())
-	return addrs.Has(ipNet.IP.String())
+	return addrs.Has(ipNet.String())
 }
 
 type testCtx struct {
