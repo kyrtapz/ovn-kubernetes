@@ -1388,6 +1388,12 @@ ovn-cluster-manager() {
   fi
   echo "egressip_flags: ${egressip_enabled_flag}, ${egressip_healthcheck_port_flag}"
 
+  egressservice_enabled_flag=
+  if [[ ${ovn_egressservice_enable} == "true" ]]; then
+         egressservice_enabled_flag="--enable-egress-service"
+  fi
+  echo "egressservice_enabled_flag=${egressservice_enabled_flag}"
+
   hybrid_overlay_flags=
   if [[ ${ovn_hybrid_overlay_enable} == "true" ]]; then
     hybrid_overlay_flags="--enable-hybrid-overlay"
@@ -1457,6 +1463,7 @@ ovn-cluster-manager() {
     ${egressip_enabled_flag} \
     ${egressip_healthcheck_port_flag} \
     ${multi_network_enabled_flag} \
+    ${egressservice_enabled_flag} \
     ${ovnkube_enable_interconnect_flag} \
     --metrics-bind-address ${ovnkube_cluster_manager_metrics_bind_address} \
     --host-network-namespace ${ovn_host_network_namespace} &
