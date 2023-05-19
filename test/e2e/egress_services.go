@@ -11,14 +11,12 @@ import (
 
 	"github.com/onsi/ginkgo"
 	ginkgotable "github.com/onsi/ginkgo/extensions/table"
-	"github.com/onsi/gomega"
 	"golang.org/x/sync/errgroup"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
-	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	utilnet "k8s.io/utils/net"
 )
 
@@ -39,7 +37,6 @@ var _ = ginkgo.Describe("Egress Services", func() {
 		externalIPv4 string
 		externalIPv6 string
 		nodes        []v1.Node
-		testsSkipped bool
 	)
 
 	f := wrappedTestFramework("egress-services")
@@ -54,17 +51,6 @@ var _ = ginkgo.Describe("Egress Services", func() {
 				"Test requires >= 3 Ready nodes, but there are only %v nodes",
 				len(n.Items))
 		}
-		testsSkipped = true
-		multiZones := isInterconnectEnabled()
-		if err != nil {
-			framework.Failf("Failed to get the node zones : %v", err)
-		}
-		if multiZones {
-			e2eskipper.Skipf(
-				"Egress services are not yet supported with multiple zones interconnect deployment",
-			)
-		}
-		testsSkipped = false
 		nodes = n.Items
 		ginkgo.By("Creating an external container to send the traffic to/from")
 		externalIPv4, externalIPv6 = createClusterExternalContainer(externalContainerName, agnhostImage,
@@ -73,10 +59,8 @@ var _ = ginkgo.Describe("Egress Services", func() {
 	})
 
 	ginkgo.AfterEach(func() {
-		if !testsSkipped {
-			deleteClusterExternalContainer(externalContainerName)
-			flushCustomRoutingTableOnNodes(nodes, customRoutingTable)
-		}
+		deleteClusterExternalContainer(externalContainerName)
+		flushCustomRoutingTableOnNodes(nodes, customRoutingTable)
 	})
 
 	ginkgotable.DescribeTable("Should validate pods' egress is SNATed to the LB's ingress ip without selectors",
