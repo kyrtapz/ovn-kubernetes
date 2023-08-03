@@ -27,7 +27,6 @@ type unidledAtController struct {
 // like "*/idled-at" is removed from a service, it sets "k8s.ovn.org/unidled-at" with the current time,
 // indicating the point in time the service has been unidled.
 func NewUnidledAtController(k kube.Interface, serviceInformer cache.SharedIndexInformer) (*unidledAtController, error) {
-
 	uac := &unidledAtController{
 		kube: k,
 	}
