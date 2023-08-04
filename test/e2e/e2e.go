@@ -583,7 +583,12 @@ var _ = ginkgo.Describe("e2e control plane", func() {
 
 		if isInterconnectEnabled() {
 			controlPlanePodName = "ovnkube-control-plane"
-			controlPlaneLeaseName = "ovn-kubernetes-master-ovn-control-plane"
+			// in "one node per zone" config, ovnkube-controller doesn't create leader election lease
+			if !singleNodePerZone() {
+				controlPlaneLeaseName = "ovn-kubernetes-master-ovn-control-plane"
+			} else {
+				controlPlaneLeaseName = "ovn-kubernetes-master"
+			}
 		} else {
 			controlPlanePodName = "ovnkube-master"
 			controlPlaneLeaseName = "ovn-kubernetes-master"

@@ -1070,6 +1070,12 @@ func isInterconnectEnabled() bool {
 	return present && val == "true"
 }
 
+func singleNodePerZone() bool {
+	val, present := os.LookupEnv("KIND_NUM_NODES_PER_ZONE")
+	// default number of nodes per zone is 1, return true if not set or set to 1
+	return !present || val == "" || val == "1"
+}
+
 // getNodeZone returns the node's zone
 func getNodeZone(node *v1.Node) (string, error) {
 	nodeZone, ok := node.Annotations[ovnNodeZoneNameAnnotation]
