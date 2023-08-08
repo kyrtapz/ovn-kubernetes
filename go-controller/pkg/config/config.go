@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -112,6 +113,9 @@ var (
 		PlatformType:         "",
 		DNSServiceNamespace:  "kube-system",
 		DNSServiceName:       "kube-dns",
+		// By default, use a short lifetime length for certificates to ensure that the automatic rotation works well,
+		// might revisit in the future to use a more sensible value
+		CertDuration: 10 * time.Minute,
 	}
 
 	// Metrics holds Prometheus metrics-related parameters.
@@ -324,8 +328,11 @@ type CNIConfig struct {
 
 // KubernetesConfig holds Kubernetes-related parsed config file parameters and command-line overrides
 type KubernetesConfig struct {
-	Kubeconfig           string `gcfg:"kubeconfig"`
-	CACert               string `gcfg:"cacert"`
+	BootstrapKubeconfig  string        `gcfg:"bootstrap-kubeconfig"`
+	CertDir              string        `gcfg:"cert-dir"`
+	CertDuration         time.Duration `gcfg:"cert-duration"`
+	Kubeconfig           string        `gcfg:"kubeconfig"`
+	CACert               string        `gcfg:"cacert"`
 	CAData               []byte
 	APIServer            string `gcfg:"apiserver"`
 	Token                string `gcfg:"token"`
@@ -384,6 +391,7 @@ type OVNKubernetesFeatureConfig struct {
 	EnableStatelessNetPol           bool `gcfg:"enable-stateless-netpol"`
 	EnableInterconnect              bool `gcfg:"enable-interconnect"`
 	EnableMultiExternalGateway      bool `gcfg:"enable-multi-external-gateway"`
+	EnableCSRApprover               bool `gcfg:"enable-csr-approver"`
 }
 
 // GatewayMode holds the node gateway mode
@@ -1025,6 +1033,12 @@ var OVNK8sFeatureFlags = []cli.Flag{
 		Destination: &cliConfig.OVNKubernetesFeature.EnableMultiExternalGateway,
 		Value:       OVNKubernetesFeature.EnableMultiExternalGateway,
 	},
+	&cli.BoolFlag{
+		Name:        "enable-csr-approver",
+		Usage:       "Configure to enable ovnkube-node CSR approver, only used by cluster-manager.",
+		Destination: &cliConfig.OVNKubernetesFeature.EnableCSRApprover,
+		Value:       OVNKubernetesFeature.EnableCSRApprover,
+	},
 }
 
 // K8sFlags capture Kubernetes-related options
@@ -1054,10 +1068,26 @@ var K8sFlags = []cli.Flag{
 		Destination: &cliConfig.Kubernetes.Kubeconfig,
 	},
 	&cli.StringFlag{
+		Name:        "bootstrap-kubeconfig",
+		Usage:       "absolute path to the Kubernetes kubeconfig file that is used to create the initial client certificates(not required if the k8s-kubeconfig is given)",
+		Destination: &cliConfig.Kubernetes.BootstrapKubeconfig,
+	},
+	&cli.StringFlag{
 		Name:        "k8s-apiserver",
 		Usage:       "URL of the Kubernetes API server (not required if --k8s-kubeconfig is given) (default: http://localhost:8443)",
 		Destination: &cliConfig.Kubernetes.APIServer,
 		Value:       Kubernetes.APIServer,
+	},
+	&cli.StringFlag{
+		Name:        "cert-dir",
+		Usage:       "absolute path to the directory of the client key and certificate",
+		Destination: &cliConfig.Kubernetes.CertDir,
+	},
+	&cli.DurationFlag{
+		Name:        "cert-duration",
+		Usage:       "requested certificate duration, default: 10min",
+		Destination: &cliConfig.Kubernetes.CertDuration,
+		Value:       Kubernetes.CertDuration,
 	},
 	&cli.StringFlag{
 		Name:        "k8s-cacert",
@@ -1601,6 +1631,8 @@ func buildKubernetesConfig(exec kexec.Interface, cli, file *config, saPath strin
 	envConfig := savedKubernetes
 	envVarsMap := map[string]string{
 		"Kubeconfig":           "KUBECONFIG",
+		"BootstrapKubeconfig":  "BOOTSTRAP_KUBECONFIG",
+		"CertDir":              "CERT_DIR",
 		"CACert":               "K8S_CACERT",
 		"APIServer":            "K8S_APISERVER",
 		"Token":                "K8S_TOKEN",

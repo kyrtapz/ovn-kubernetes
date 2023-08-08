@@ -4,6 +4,8 @@ metadata:
     name: ovnkube-node
     namespace: ovn-kubernetes
 
+# When ovn_enable_ovnkube_identity is true, an ovnkube-node process will identify as a user in a system:ovn-nodes group,
+# not the ovnkube-node serviceAccount
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -11,6 +13,30 @@ metadata:
     name: ovnkube-node
 roleRef:
     name: ovnkube-node
+    kind: ClusterRole
+    apiGroup: rbac.authorization.k8s.io
+subjects:
+    {% if ovn_enable_ovnkube_identity == "true" -%}
+    - kind: Group
+      name: system:ovn-nodes
+      apiGroup: rbac.authorization.k8s.io
+    {% else %}
+    - kind: ServiceAccount
+      name: ovnkube-node
+      namespace: ovn-kubernetes
+    {%- endif %}
+
+
+# even when ovn_enable_ovnkube_identity is enabled, an ovnkube-node service account
+# is used in the ovnkube-node pod during initialization:
+# https://github.com/ovn-org/ovn-kubernetes/blob/db65b5e2aad63cd2a122215383be06181b8c9089/dist/images/ovnkube.sh#L752
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+    name: ovnkube-node-status-reader
+roleRef:
+    name: ovnkube-node-status-reader
     kind: ClusterRole
     apiGroup: rbac.authorization.k8s.io
 subjects:
@@ -29,9 +55,15 @@ roleRef:
     kind: Role
     apiGroup: rbac.authorization.k8s.io
 subjects:
+    {% if ovn_enable_ovnkube_identity == "true" -%}
+    - kind: Group
+      name: system:ovn-nodes
+      apiGroup: rbac.authorization.k8s.io
+    {% else %}
     - kind: ServiceAccount
       name: ovnkube-node
       namespace: ovn-kubernetes
+    {%- endif %}
 
 {% if ovn_enable_interconnect == "true" -%}
 ---
@@ -45,9 +77,20 @@ roleRef:
     kind: Role
     apiGroup: rbac.authorization.k8s.io
 subjects:
+    {% if ovn_enable_ovnkube_identity == "true" -%}
+    - kind: Group
+      name: system:ovn-nodes
+      apiGroup: rbac.authorization.k8s.io
+    {% else %}
     - kind: ServiceAccount
       name: ovnkube-node
       namespace: ovn-kubernetes
+    {%- endif %}
+{%- endif %}
+
+# even when ovn_enable_ovnkube_identity is enabled, an ovnkube-node service account 
+# is used in the ovnkube-node pod during initialization:
+# https://github.com/ovn-org/ovn-kubernetes/blob/db65b5e2aad63cd2a122215383be06181b8c9089/dist/images/ovnkube.sh#L370
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -62,7 +105,18 @@ subjects:
     - kind: ServiceAccount
       name: ovnkube-node
       namespace: ovn-kubernetes
-{%- endif %}
+
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: ovnkube-node-status-reader
+rules:
+    - apiGroups: [""]
+      resources:
+          - nodes/status
+      verbs: [ "get" ]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -116,6 +170,14 @@ rules:
           - egressservices
           - adminpolicybasedexternalroutes
       verbs: [ "get", "list", "watch" ]
+    - apiGroups: ["certificates.k8s.io"]
+      resources:
+          - certificatesigningrequests
+      verbs:
+        - create
+        - get
+        - list
+        - watch
     - apiGroups: [""]
       resources:
           - events
@@ -129,7 +191,7 @@ rules:
           - nodes/status
       verbs: [ "patch", "update" ]
 
-{% if ovn_enable_interconnect == "true" -%}
+# Without IC endpoints are read by ovnkube-node on startup
 # Endpoints are created by ovnkube-zone-controller/sb-ovsdb startup script in multinode-zone for IC
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -141,5 +203,8 @@ rules:
     - apiGroups: [""]
       resources:
           - endpoints
-      verbs: [ "get", "create" ]
-{%- endif %}
+      verbs:
+        - get
+        {% if ovn_enable_interconnect == "true" -%}
+        - create
+        {%- endif %}
