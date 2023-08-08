@@ -319,6 +319,9 @@ while [ "$1" != "" ]; do
   --enable-multi-external-gateway)
     OVN_ENABLE_MULTI_EXTERNAL_GATEWAY=$VALUE
     ;;
+  --enable-per-node-cert)
+    OVN_ENABLE_PER_NODE_CERT=$VALUE
+    ;;
   *)
     echo "WARNING: unknown parameter \"$PARAM\""
     exit 1
@@ -485,6 +488,8 @@ ovn_enable_interconnect=${OVN_ENABLE_INTERCONNECT}
 echo "ovn_enable_interconnect: ${ovn_enable_interconnect}"
 ovn_enable_multi_external_gateway=${OVN_ENABLE_MULTI_EXTERNAL_GATEWAY}
 echo "ovn_enable_multi_external_gateway: ${ovn_enable_multi_external_gateway}"
+ovn_enable_per_node_cert=${OVN_ENABLE_PER_NODE_CERT}
+echo "ovn_enable_per_node_cert: ${ovn_enable_per_node_cert}"
 
 ovn_image=${ovnkube_image} \
   ovnkube_compact_mode_enable=${ovnkube_compact_mode_enable} \
@@ -531,6 +536,7 @@ ovn_image=${ovnkube_image} \
   ovnkube_node_mgmt_port_netdev=${ovnkube_node_mgmt_port_netdev} \
   ovn_enable_interconnect=${ovn_enable_interconnect} \
   ovn_enable_multi_external_gateway=${ovn_enable_multi_external_gateway} \
+  ovn_enable_per_node_cert=${ovn_enable_per_node_cert} \
   ovnkube_app_name=ovnkube-node \
   j2 ../templates/ovnkube-node.yaml.j2 -o ${output_dir}/ovnkube-node.yaml
 
@@ -613,6 +619,7 @@ ovn_image=${ovnkube_image} \
   ovnkube_compact_mode_enable=${ovnkube_compact_mode_enable} \
   ovn_unprivileged_mode=${ovn_unprivileged_mode} \
   ovn_enable_multi_external_gateway=${ovn_enable_multi_external_gateway} \
+  ovn_enable_per_node_cert=${ovn_enable_per_node_cert} \
   j2 ../templates/ovnkube-master.yaml.j2 -o ${output_dir}/ovnkube-master.yaml
 
 ovn_image=${ovnkube_image} \
@@ -648,6 +655,7 @@ ovn_image=${ovnkube_image} \
   ovn_ex_gw_networking_interface=${ovn_ex_gw_networking_interface} \
   ovn_enable_interconnect=${ovn_enable_interconnect} \
   ovn_enable_multi_external_gateway=${ovn_enable_multi_external_gateway} \
+  ovn_enable_per_node_cert=${ovn_enable_per_node_cert} \
   j2 ../templates/ovnkube-control-plane.yaml.j2 -o ${output_dir}/ovnkube-control-plane.yaml
 
 ovn_image=${image} \
@@ -731,6 +739,7 @@ ovn_image=${ovnkube_image} \
   ovn_loglevel_nb=${ovn_loglevel_nb} ovn_loglevel_sb=${ovn_loglevel_sb} \
   ovn_enable_interconnect=${ovn_enable_interconnect} \
   ovn_enable_multi_external_gateway=${ovn_enable_multi_external_gateway} \
+  ovn_enable_per_node_cert=${ovn_enable_per_node_cert} \
   j2 ../templates/ovnkube-single-node-zone.yaml.j2 -o ${output_dir}/ovnkube-single-node-zone.yaml
 
 ovn_image=${ovnkube_image} \
@@ -785,12 +794,20 @@ ovn_image=${ovnkube_image} \
   ovn_loglevel_nb=${ovn_loglevel_nb} ovn_loglevel_sb=${ovn_loglevel_sb} \
   ovn_enable_interconnect=${ovn_enable_interconnect} \
   ovn_enable_multi_external_gateway=${ovn_enable_multi_external_gateway} \
+  ovn_enable_per_node_cert=${ovn_enable_per_node_cert} \
   j2 ../templates/ovnkube-zone-controller.yaml.j2 -o ${output_dir}/ovnkube-zone-controller.yaml
 
 ovn_image=${image} \
   ovn_image_pull_policy=${image_pull_policy} \
   ovn_unprivileged_mode=${ovn_unprivileged_mode} \
   j2 ../templates/ovs-node.yaml.j2 -o ${output_dir}/ovs-node.yaml
+
+ovn_image=${ovnkube_image} \
+  ovn_image=${image} \
+  ovn_image_pull_policy=${image_pull_policy} \
+  ovn_master_count=${ovn_master_count} \
+  ovnkube_master_loglevel=${master_loglevel} \
+  j2 ../templates/ovnkube-identity.yaml.j2 -o ${output_dir}/ovnkube-identity.yaml
 
 if ${enable_ipsec}; then
   ovn_image=${image} \
@@ -820,6 +837,7 @@ net_cidr=${net_cidr} svc_cidr=${svc_cidr} \
 ovn_enable_interconnect=${ovn_enable_interconnect} \
   j2 ../templates/rbac-ovnkube-node.yaml.j2 -o ${output_dir}/rbac-ovnkube-node.yaml
 
+cp ../templates/rbac-ovnkube-identity.yaml.j2 ${output_dir}/rbac-ovnkube-identity.yaml
 cp ../templates/rbac-ovnkube-master.yaml.j2 ${output_dir}/rbac-ovnkube-master.yaml
 cp ../templates/rbac-ovnkube-db.yaml.j2 ${output_dir}/rbac-ovnkube-db.yaml
 cp ../templates/rbac-ovnkube-cluster-manager.yaml.j2 ${output_dir}/rbac-ovnkube-cluster-manager.yaml

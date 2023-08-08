@@ -147,7 +147,6 @@ func (cm *ClusterManager) Start(ctx context.Context) error {
 			return err
 		}
 	}
-
 	return nil
 }
 

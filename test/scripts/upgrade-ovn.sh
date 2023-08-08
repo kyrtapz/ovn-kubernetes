@@ -271,10 +271,16 @@ pushd ../dist/yaml
 
 # install updated k8s configuration for ovn-k (useful in case of ClusterRole updates)
 run_kubectl apply -f ovn-setup.yaml
+run_kubectl apply -f rbac-ovnkube-identity.yaml
 run_kubectl apply -f rbac-ovnkube-cluster-manager.yaml
 run_kubectl apply -f rbac-ovnkube-master.yaml
 run_kubectl apply -f rbac-ovnkube-node.yaml
 run_kubectl apply -f rbac-ovnkube-db.yaml
+
+# install updated k8s ovnkube-identity deployment
+run_kubectl apply -f ovnkube-identity.yaml
+
+kubectl_wait_deployment ovnkube-identity
 
 # install updated ovnkube-node daemonset
 run_kubectl apply -f ovnkube-node.yaml

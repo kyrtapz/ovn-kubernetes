@@ -289,6 +289,8 @@ spec:
           value: "{{ ovn_stateless_netpol_enable }}"
         - name: OVN_ENABLE_MULTI_EXTERNAL_GATEWAY
           value: "{{ ovn_enable_multi_external_gateway }}"
+        - name: OVN_ENABLE_PER_NODE_CERT
+          value: "{{ ovn_enable_per_node_cert }}"
         - name: OVN_HOST_NETWORK_NAMESPACE
           valueFrom:
             configMapKeyRef:

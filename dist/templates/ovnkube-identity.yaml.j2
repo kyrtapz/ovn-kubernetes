@@ -1,0 +1,77 @@
+# ovnkube-identity
+# starts ovnkube-identity
+# it is run on the master(s).
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: ovnkube-identity
+  # namespace set up by install
+  namespace: ovn-kubernetes
+  annotations:
+    kubernetes.io/description: |
+      This Deployment launches the ovnkube-identity networking component.
+spec:
+  progressDeadlineSeconds: 600
+  replicas: {{ ovn_master_count | default(1|int) }}
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      name: ovnkube-identity
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        name: ovnkube-identity
+        component: network
+        type: infra
+        kubernetes.io/os: "linux"
+    spec:
+      priorityClassName: "system-cluster-critical"
+      # TODO: Use specific serviceAccountName
+      serviceAccountName: ovnkube-identity
+      hostNetwork: true
+      dnsPolicy: Default
+
+      # required to be scheduled on a linux node with node-role.kubernetes.io/control-plane label and
+      # only one instance of ovnkube-control-plane pod per node
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: In
+                    values:
+                      - ""
+                  - key: kubernetes.io/os
+                    operator: In
+                    values:
+                      - "linux"
+      containers:
+      - name: ovnkube-identity
+        image: "{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
+        imagePullPolicy: "{{ ovn_image_pull_policy | default('IfNotPresent') }}"
+        command: ["/root/ovnkube.sh", "ovnkube-identity"]
+        securityContext:
+          runAsUser: 0
+        terminationMessagePolicy: FallbackToLogsOnError
+        resources:
+          requests:
+            cpu: 100m
+            memory: 300Mi
+        env:
+          - name: OVN_DAEMONSET_VERSION
+            value: "3"
+          - name: K8S_APISERVER
+            valueFrom:
+              configMapKeyRef:
+                key: k8s_apiserver
+                name: ovn-config
+          - name: OVNKUBE_LOGLEVEL
+            value: "{{ ovnkube_master_loglevel }}"
+      tolerations:
+      - operator: "Exists"

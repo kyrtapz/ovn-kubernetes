@@ -880,7 +880,8 @@ create_ovn_kube_manifests() {
     --ovnkube-metrics-scale-enable="${OVN_METRICS_SCALE_ENABLE}" \
     --compact-mode="${OVN_COMPACT_MODE}" \
     --enable-interconnect="${OVN_ENABLE_INTERCONNECT}" \
-    --enable-multi-external-gateway=true
+    --enable-multi-external-gateway=true \
+    --enable-per-node-cert=true
   popd
 }
 
@@ -907,6 +908,7 @@ install_ovn_global_zone() {
     run_kubectl apply -f ovnkube-db.yaml
   fi
 
+  run_kubectl apply -f ovnkube-identity.yaml
   run_kubectl apply -f ovnkube-master.yaml
   run_kubectl apply -f ovnkube-node.yaml
 }
@@ -917,6 +919,7 @@ install_ovn_single_node_zones() {
     kubectl label node "${n}" k8s.ovn.org/zone-name=${n} --overwrite
   done
 
+  run_kubectl apply -f ovnkube-identity.yaml
   run_kubectl apply -f ovnkube-control-plane.yaml
   run_kubectl apply -f ovnkube-single-node-zone.yaml
 }
@@ -942,6 +945,7 @@ install_ovn_multiple_nodes_zones() {
     fi
   done
 
+  run_kubectl apply -f ovnkube-identity.yaml
   run_kubectl apply -f ovnkube-control-plane.yaml
   run_kubectl apply -f ovnkube-zone-controller.yaml
   run_kubectl apply -f ovnkube-node.yaml
@@ -958,6 +962,7 @@ install_ovn() {
   run_kubectl apply -f policy.networking.k8s.io_adminnetworkpolicies.yaml
   run_kubectl apply -f policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
   run_kubectl apply -f ovn-setup.yaml
+  run_kubectl apply -f rbac-ovnkube-identity.yaml
   run_kubectl apply -f rbac-ovnkube-cluster-manager.yaml
   run_kubectl apply -f rbac-ovnkube-master.yaml
   run_kubectl apply -f rbac-ovnkube-node.yaml
