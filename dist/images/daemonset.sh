@@ -802,11 +802,24 @@ ovn_image=${image} \
   ovn_unprivileged_mode=${ovn_unprivileged_mode} \
   j2 ../templates/ovs-node.yaml.j2 -o ${output_dir}/ovs-node.yaml
 
+ovnkube_certs_dir="/tmp/ovnkube-certs"
+ovnkube_webhook_name="ovnkube-webhook"
+mkdir -p ${ovnkube_certs_dir}
+path_prefix="${ovnkube_certs_dir}/${ovnkube_webhook_name}"
+
+# Create self signed CA and webhook cert
+openssl req -x509 -newkey rsa:4096 -nodes -keyout "${path_prefix}-ca.key" -out "${path_prefix}-ca.crt" -days 400 -subj "/CN=self-signed-ca"
+openssl req -newkey rsa:4096 -nodes -keyout "${path_prefix}.key" -out "${path_prefix}.csr" -subj "/CN=localhost"
+openssl x509 -req -in "${path_prefix}.csr" -CA "${path_prefix}-ca.crt" -CAkey "${path_prefix}-ca.key" -extfile <(printf "subjectAltName=DNS:localhost") -CAcreateserial -out "${path_prefix}.crt" -days 365
+
 ovn_image=${ovnkube_image} \
   ovn_image=${image} \
   ovn_image_pull_policy=${image_pull_policy} \
   ovn_master_count=${ovn_master_count} \
   ovnkube_master_loglevel=${master_loglevel} \
+  webhook_ca_bundle=$(cat "${path_prefix}-ca.crt" | base64 -w0) \
+  webhook_key=$(cat "${path_prefix}.key" | base64 -w0) \
+  webhook_cert=$(cat "${path_prefix}.crt" | base64 -w0) \
   j2 ../templates/ovnkube-identity.yaml.j2 -o ${output_dir}/ovnkube-identity.yaml
 
 if ${enable_ipsec}; then

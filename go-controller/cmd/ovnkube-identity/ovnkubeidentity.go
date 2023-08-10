@@ -2,22 +2,33 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/csrapprover"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovnwebhook"
 	"github.com/urfave/cli/v2"
 	certificatesv1 "k8s.io/api/certificates/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
+	utilpointer "k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
 type config struct {
-	apiServer string
-	logLevel  int
+	apiServer      string
+	logLevel       int
+	port           int
+	host           string
+	certDir        string
+	metricsAddress string
 }
 
 var cliCfg config
@@ -49,6 +60,29 @@ func main() {
 			Usage:       "log verbosity and level: info, warn, fatal, error are always printed no matter the log level. Use 5 for debug (default: 4)",
 			Destination: &cliCfg.logLevel,
 			Value:       4,
+		},
+		&cli.StringFlag{
+			Name:        "webhook-cert-dir",
+			Usage:       "directory that contains the server key and certificate",
+			Destination: &cliCfg.certDir,
+		},
+		&cli.StringFlag{
+			Name:        "webhook-host",
+			Usage:       "the address that the webhook server will listen on",
+			Value:       "localhost",
+			Destination: &cliCfg.host,
+		},
+		&cli.IntFlag{
+			Name:        "webhook-port",
+			Usage:       "port number that the webhook server will serve",
+			Value:       webhook.DefaultPort,
+			Destination: &cliCfg.port,
+		},
+		&cli.StringFlag{
+			Name:        "metrics-address",
+			Usage:       "address that the metrics server will serve",
+			Value:       metrics.DefaultBindAddress,
+			Destination: &cliCfg.metricsAddress,
 		},
 	}
 
@@ -90,9 +124,28 @@ func run(c *cli.Context) error {
 	}
 
 	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
-		// TODO: Metrics, if we want metrics we need to use a unique pod since the pod will be host networked
-		MetricsBindAddress: "0",
+		WebhookServer: webhook.NewServer(webhook.Options{
+			Host:    cliCfg.host,
+			Port:    cliCfg.port,
+			CertDir: cliCfg.certDir,
+		}),
+		MetricsBindAddress: cliCfg.metricsAddress,
+		// Explicitly disable LeaderElection, the webhooks have to run on every node the manager is deployed on
+		LeaderElection: false,
 	})
+	if err != nil {
+		return err
+	}
+
+	err = ctrl.NewWebhookManagedBy(mgr).For(&corev1.Node{}).WithValidator(ovnwebhook.NodeAdmission{}).Complete()
+	if err != nil {
+		return fmt.Errorf("failed to setup the node admission webhook: %v", err)
+	}
+
+	err = ctrl.NewWebhookManagedBy(mgr).For(&corev1.Pod{}).WithValidator(ovnwebhook.PodAdmission{}).Complete()
+	if err != nil {
+		return fmt.Errorf("failed to setup the pod admission webhook: %v", err)
+	}
 
 	if err != nil {
 		return err
@@ -100,6 +153,11 @@ func run(c *cli.Context) error {
 	err = ctrl.
 		NewControllerManagedBy(mgr).
 		For(&certificatesv1.CertificateSigningRequest{}, builder.WithPredicates(csrapprover.Predicate)).
+		WithOptions(controller.Options{
+			// Explicitly enable leader election for CSR approver
+			NeedLeaderElection: utilpointer.Bool(true),
+			RecoverPanic:       utilpointer.Bool(true),
+		}).
 		Complete(csrapprover.NewController(
 			mgr.GetClient(),
 			csrapprover.NamePrefix,

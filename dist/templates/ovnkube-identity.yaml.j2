@@ -63,6 +63,9 @@ spec:
           requests:
             cpu: 100m
             memory: 300Mi
+        volumeMounts:
+          - mountPath: /etc/webhook-cert/
+            name: webhook-cert
         env:
           - name: OVN_DAEMONSET_VERSION
             value: "3"
@@ -73,5 +76,59 @@ spec:
                 name: ovn-config
           - name: OVNKUBE_LOGLEVEL
             value: "{{ ovnkube_master_loglevel }}"
+      volumes:
+        - name: webhook-cert
+          secret:
+            secretName: ovnkube-webhook-cert
       tolerations:
       - operator: "Exists"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ovnkube-webhook-cert
+  namespace: ovn-kubernetes
+data:
+  tls.crt: {{ webhook_cert }}
+  tls.key: {{ webhook_key }}
+type: kubernetes.io/tls
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: ovn-kubernetes-admission-webhook-node
+webhooks:
+  - name: ovn-kubernetes-admission-webhook-node.k8s.io
+    clientConfig:
+      url: https://localhost:9443/validate--v1-node
+      caBundle: {{ webhook_ca_bundle }}
+    admissionReviewVersions: ['v1']
+    sideEffects: None
+    rules:
+      - operations: [ "UPDATE" ]
+        apiGroups: ["*"]
+        apiVersions: ["*"]
+        resources: ["nodes/status"] # Using /status subresource doesn't protect from other users changing the annotations
+        scope: "*"
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: ovn-kubernetes-admission-webhook-pod
+webhooks:
+  - name: ovn-kubernetes-admission-webhook-pod.k8s.io
+    clientConfig:
+      url: https://localhost:9443/validate--v1-pod
+      caBundle: {{ webhook_ca_bundle }}
+    admissionReviewVersions: ['v1']
+    sideEffects: None
+    rules:
+      - operations: [ "UPDATE" ]
+        apiGroups: ["*"]
+        apiVersions: ["*"]
+        resources: ["pods/status"] # Using /status subresource doesn't protect from other users changing the annotations
+        scope: "*"
+

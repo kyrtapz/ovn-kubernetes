@@ -1010,7 +1010,9 @@ ovnkube-identity() {
     trap 'kill $(jobs -p); exit 0' TERM
     check_ovn_daemonset_version "3"
     rm -f ${OVN_RUNDIR}/ovnkube-identity.pid
-    /usr/bin/ovnkube-identity  --k8s-apiserver=${K8S_APISERVER} --loglevel=${ovnkube_loglevel}
+    /usr/bin/ovnkube-identity  --k8s-apiserver="${K8S_APISERVER}" \
+    --webhook-cert-dir="/etc/webhook-cert" \
+    --loglevel="${ovnkube_loglevel}"
 
     echo "=============== ovn-identity ========== running"
     wait_for_event attempts=3 process_ready ovnkube-identity
