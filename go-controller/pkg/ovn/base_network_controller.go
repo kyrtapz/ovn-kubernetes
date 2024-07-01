@@ -177,6 +177,7 @@ type BaseSecondaryNetworkController struct {
 
 	// multi-network policy events factory handler
 	policyHandler *factory.Handler
+	networkID     int
 }
 
 func getNetworkControllerName(netName string) string {

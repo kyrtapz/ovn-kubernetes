@@ -702,17 +702,24 @@ func (oc *BaseSecondaryNetworkController) allowPersistentIPs() bool {
 		(oc.NetInfo.TopologyType() == types.Layer2Topology || oc.NetInfo.TopologyType() == types.LocalnetTopology)
 }
 
-func (oc *BaseSecondaryNetworkController) getNetworkID() (int, error) {
-	if oc.networkID == nil || *oc.networkID == util.InvalidNetworkID {
-		oc.networkID = ptr.To(util.InvalidNetworkID)
-		nodes, err := oc.watchFactory.GetNodes()
+func (oc *BaseSecondaryNetworkController) ensureNetworkID() error {
+	if oc.networkID != 0 {
+	}
+	nodes, err := oc.watchFactory.GetNodes()
+	if err != nil {
+		return fmt.Errorf("failed to get nodes: %v", err)
+	}
+	networkID := util.InvalidNetworkID
+	for _, node := range nodes {
+		networkID, err = util.ParseNetworkIDAnnotation(node, oc.GetNetworkName())
 		if err != nil {
-			return util.InvalidNetworkID, err
-		}
-		*oc.networkID, err = util.GetNetworkID(nodes, oc.NetInfo)
-		if err != nil {
-			return util.InvalidNetworkID, err
+			//TODO Warning
+			continue
 		}
 	}
-	return *oc.networkID, nil
+	if networkID == util.InvalidNetworkID {
+		return fmt.Errorf("missing network id for network '%s'", oc.GetNetworkName())
+	}
+	oc.networkID = networkID
+	return nil
 }
