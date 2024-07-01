@@ -150,9 +150,14 @@ func (bnc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet [
 		Copp:        &bnc.defaultCOPPUUID,
 	}
 
-	if bnc.IsSecondary() {
+	if bnc.IsPrimaryNetwork() || bnc.IsSecondary() {
 		logicalRouter.ExternalIDs[types.NetworkExternalID] = bnc.GetNetworkName()
+		logicalRouter.ExternalIDs[types.NetworkRoleExternalID] = types.NetworkRolePrimary
 		logicalRouter.ExternalIDs[types.TopologyExternalID] = bnc.TopologyType()
+
+		if !bnc.IsPrimaryNetwork() {
+			logicalRouter.ExternalIDs[types.NetworkRoleExternalID] = types.NetworkRoleSecondary
+		}
 	}
 
 	if bnc.clusterLoadBalancerGroupUUID != "" {
@@ -626,11 +631,18 @@ func (bnc *BaseNetworkController) addExternalSwitch(prefix, interfaceID, nodeNam
 	}
 
 	sw := nbdb.LogicalSwitch{Name: externalSwitch}
-	if bnc.IsSecondary() {
+	if bnc.IsPrimaryNetwork() || bnc.IsSecondary() {
 		sw.ExternalIDs = map[string]string{
-			types.NetworkExternalID:  bnc.GetNetworkName(),
+			types.NetworkExternalID:     bnc.GetNetworkName(),
+			types.NetworkRoleExternalID: types.NetworkRolePrimary,
+
 			types.TopologyExternalID: bnc.TopologyType(),
 		}
+
+		if !bnc.IsPrimaryNetwork() {
+			sw.ExternalIDs[types.NetworkRoleExternalID] = types.NetworkRoleSecondary
+		}
+
 	}
 
 	err = libovsdbops.CreateOrUpdateLogicalSwitchPortsAndSwitch(bnc.nbClient, &sw, &externalLogicalSwitchPort, &externalLogicalSwitchPortToRouter)

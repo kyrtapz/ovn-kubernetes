@@ -16,7 +16,9 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	kube_test "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
+	v1nadmocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/listers/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	v1 "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
@@ -75,7 +77,9 @@ func newControllerWithDBSetup(dbSetup libovsdbtest.TestSetup) (*serviceControlle
 		informerFactory.Core().V1().Services(),
 		informerFactory.Discovery().V1().EndpointSlices(),
 		informerFactory.Core().V1().Nodes(),
+		&v1nadmocks.NetworkAttachmentDefinitionLister{},
 		recorder,
+		&util.DefaultNetInfo{},
 	)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
@@ -528,8 +532,8 @@ func Test_ETPCluster_NodePort_Service_WithMultipleIPAddresses(t *testing.T) {
 		name:               nodeName,
 		l3gatewayAddresses: []net.IP{nodeIPv4[0], nodeIPv6[0]},
 		hostAddresses:      append(nodeIPv4, nodeIPv6...),
-		gatewayRouterName:  nodeGWRouterName(nodeName),
-		switchName:         nodeSwitchName(nodeName),
+		gatewayRouterName:  nodeGWRouterName(nodeName), // TODO UDN-aware?
+		switchName:         nodeSwitchName(nodeName),   // TODO UDN-aware?
 		chassisID:          nodeName,
 		zone:               types.OvnDefaultZone,
 	}
@@ -844,7 +848,7 @@ func makeTarget(serviceName, serviceNamespace string, proto v1.Protocol, outputP
 	return makeTemplateName(
 		fmt.Sprintf("Service_%s/%s_%s_%d_%s_%s",
 			serviceNamespace, serviceName,
-			proto, outputPort, scope, addressFamily))
+			proto, outputPort, scope, addressFamily)) /// TODO add netInfo
 }
 
 func computeEndpoints(outputPort int32, ips ...string) string {

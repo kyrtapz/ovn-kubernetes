@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"reflect"
-	"sync"
 	"time"
 
 	nettypes "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
@@ -428,22 +427,6 @@ func shouldUpdateNode(node, oldNode *kapi.Node) (bool, error) {
 	}
 
 	return true, nil
-}
-
-func (oc *DefaultNetworkController) StartServiceController(wg *sync.WaitGroup, runRepair bool) error {
-	klog.Infof("Starting OVN Service Controller: Using Endpoint Slices")
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		useLBGroups := oc.clusterLoadBalancerGroupUUID != ""
-		// use 5 workers like most of the kubernetes controllers in the
-		// kubernetes controller-manager
-		err := oc.svcController.Run(5, oc.stopChan, runRepair, useLBGroups, oc.svcTemplateSupport)
-		if err != nil {
-			klog.Errorf("Error running OVN Kubernetes Services controller: %v", err)
-		}
-	}()
-	return nil
 }
 
 func (oc *DefaultNetworkController) InitEgressServiceZoneController() (*egresssvc_zone.Controller, error) {

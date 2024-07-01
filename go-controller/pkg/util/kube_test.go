@@ -459,7 +459,7 @@ func TestPodScheduled(t *testing.T) {
 
 func TestExternalIDsForObject(t *testing.T) {
 	assert.Equal(t,
-		ExternalIDsForObject(&v1.Service{
+		ExternalIDsForLoadBalancer(&v1.Service{
 			TypeMeta: metav1.TypeMeta{
 				Kind:       "Service",
 				APIVersion: "v1",
@@ -476,7 +476,7 @@ func TestExternalIDsForObject(t *testing.T) {
 		})
 
 	assert.Equal(t,
-		ExternalIDsForObject(&v1.Service{
+		ExternalIDsForLoadBalancer(&v1.Service{
 			// also handle no TypeMeta, which can happen.
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "svc-ab23",

@@ -8,6 +8,7 @@ import (
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	utilerrors "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util/errors"
 
 	corev1 "k8s.io/api/core/v1"
@@ -116,6 +117,10 @@ func (oc *BaseSecondaryLayer2NetworkController) initializeLogicalSwitch(switchNa
 	}
 	logicalSwitch.ExternalIDs[types.NetworkExternalID] = oc.GetNetworkName()
 	logicalSwitch.ExternalIDs[types.TopologyExternalID] = oc.TopologyType()
+	logicalSwitch.ExternalIDs[ovntypes.NetworkRoleExternalID] = types.NetworkRolePrimary
+	if !oc.IsPrimaryNetwork() {
+		logicalSwitch.ExternalIDs[ovntypes.NetworkRoleExternalID] = types.NetworkRoleSecondary
+	}
 
 	hostSubnets := make([]*net.IPNet, 0, len(clusterSubnets))
 	for _, clusterSubnet := range clusterSubnets {

@@ -32,6 +32,8 @@ type nodeTracker struct {
 
 	// zone in which this nodeTracker is tracking
 	zone string
+
+	netInfo util.NetInfo
 }
 
 type nodeInfo struct {
@@ -76,11 +78,13 @@ func (ni *nodeInfo) l3gatewayAddressesStr() []string {
 	return out
 }
 
-func newNodeTracker(zone string, resyncFn func(nodes []nodeInfo)) *nodeTracker {
+func newNodeTracker(zone string, resyncFn func(nodes []nodeInfo), netInfo util.NetInfo) *nodeTracker {
+
 	return &nodeTracker{
 		nodes:    map[string]nodeInfo{},
 		zone:     zone,
 		resyncFn: resyncFn,
+		netInfo:  netInfo,
 	}
 }
 
@@ -213,7 +217,7 @@ func (nt *nodeTracker) updateNode(node *v1.Node) {
 		return
 	}
 
-	switchName := node.Name
+	switchName := nt.netInfo.GetNetworkScopedSwitchName(node.Name)
 	grName := ""
 	l3gatewayAddresses := []net.IP{}
 	chassisID := ""
@@ -225,14 +229,14 @@ func (nt *nodeTracker) updateNode(node *v1.Node) {
 	if err != nil || gwConf == nil {
 		klog.Infof("Node %s has invalid / no gateway config: %v", node.Name, err)
 	} else if gwConf.Mode != globalconfig.GatewayModeDisabled {
-		grName = util.GetGatewayRouterFromNode(node.Name)
-		for _, ip := range gwConf.IPAddresses {
+		grName = nt.netInfo.GetNetworkScopedGWRouterName(node.Name)
+		for _, ip := range gwConf.IPAddresses { // TODO is this still correct for UDN?
 			l3gatewayAddresses = append(l3gatewayAddresses, ip.IP)
 		}
 		nodePortEnabled = gwConf.NodePortEnable
 		chassisID = gwConf.ChassisID
 	}
-	hostAddresses, err := util.GetNodeHostAddrs(node)
+	hostAddresses, err := util.GetNodeHostAddrs(node) // TODO Any restrictions in a UDN?
 	if err != nil {
 		klog.Warningf("Failed to get node host CIDRs for [%s]: %s", node.Name, err.Error())
 	}

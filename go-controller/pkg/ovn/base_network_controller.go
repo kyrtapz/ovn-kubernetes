@@ -18,6 +18,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
+	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	zoneic "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/zone_interconnect"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/persistentips"
@@ -184,6 +185,9 @@ type BaseNetworkController struct {
 	// Cluster-wide router default Control Plane Protection (COPP) UUID
 	defaultCOPPUUID string
 	//TODO(dceara): [END] move these to a better place?
+
+	// Controller used to handle services
+	svcController *svccontroller.Controller
 }
 
 // BaseSecondaryNetworkController structure holds per-network fields and network specific
@@ -274,9 +278,15 @@ func (bnc *BaseNetworkController) createOvnClusterRouter() (*nbdb.LogicalRouter,
 		},
 		Copp: &bnc.defaultCOPPUUID,
 	}
-	if bnc.IsSecondary() {
+	if bnc.IsPrimaryNetwork() || bnc.IsSecondary() {
 		logicalRouter.ExternalIDs[types.NetworkExternalID] = bnc.GetNetworkName()
+		logicalRouter.ExternalIDs[types.NetworkRoleExternalID] = types.NetworkRolePrimary
 		logicalRouter.ExternalIDs[types.TopologyExternalID] = bnc.TopologyType()
+
+		if !bnc.IsPrimaryNetwork() {
+			logicalRouter.ExternalIDs[types.NetworkRoleExternalID] = types.NetworkRoleSecondary
+		}
+
 	}
 	if bnc.multicastSupport {
 		logicalRouter.Options = map[string]string{
@@ -331,10 +341,14 @@ func (bnc *BaseNetworkController) createJoinSwitch(clusterRouter *nbdb.LogicalRo
 	logicalSwitch := nbdb.LogicalSwitch{
 		Name: joinSwitchName,
 	}
-	if bnc.IsSecondary() {
+	if bnc.IsPrimaryNetwork() || bnc.IsSecondary() {
 		logicalSwitch.ExternalIDs = map[string]string{
-			types.NetworkExternalID:  bnc.GetNetworkName(),
-			types.TopologyExternalID: bnc.TopologyType(),
+			types.NetworkExternalID:     bnc.GetNetworkName(),
+			types.NetworkRoleExternalID: types.NetworkRolePrimary,
+			types.TopologyExternalID:    bnc.TopologyType(),
+		}
+		if !bnc.IsPrimaryNetwork() {
+			logicalSwitch.ExternalIDs[types.NetworkRoleExternalID] = types.NetworkRoleSecondary
 		}
 	}
 
@@ -459,10 +473,14 @@ func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostS
 	logicalSwitch := nbdb.LogicalSwitch{
 		Name: switchName,
 	}
-	if bnc.IsSecondary() {
+	if bnc.IsPrimaryNetwork() || bnc.IsSecondary() {
 		logicalSwitch.ExternalIDs = map[string]string{
-			types.NetworkExternalID:  bnc.GetNetworkName(),
-			types.TopologyExternalID: bnc.TopologyType(),
+			types.NetworkExternalID:     bnc.GetNetworkName(),
+			types.NetworkRoleExternalID: types.NetworkRolePrimary,
+			types.TopologyExternalID:    bnc.TopologyType(),
+		}
+		if !bnc.IsPrimaryNetwork() {
+			logicalSwitch.ExternalIDs[types.NetworkRoleExternalID] = types.NetworkRoleSecondary
 		}
 	}
 
@@ -944,10 +962,10 @@ func (bnc *BaseNetworkController) isLocalZoneNode(node *kapi.Node) bool {
 
 // getActiveNetworkForNamespace returns the active network for the given namespace
 // and is a wrapper around util.GetActiveNetworkForNamespace
-func (bnc *BaseNetworkController) getActiveNetworkForNamespace(namespace string) (util.NetInfo, error) {
+func (cnci *CommonNetworkControllerInfo) getActiveNetworkForNamespace(namespace string) (util.NetInfo, error) {
 	var nadLister nadlister.NetworkAttachmentDefinitionLister
 	if util.IsNetworkSegmentationSupportEnabled() {
-		nadLister = bnc.watchFactory.NADInformer().Lister()
+		nadLister = cnci.watchFactory.NADInformer().Lister()
 	}
 	return util.GetActiveNetworkForNamespace(namespace, nadLister)
 }
@@ -1080,4 +1098,20 @@ func (bnc *BaseNetworkController) findMigratablePodIPsForSubnets(subnets []*net.
 		}
 	}
 	return ipList, nil
+}
+
+func (bnc *BaseNetworkController) StartServiceController(wg *sync.WaitGroup, runRepair bool) error {
+	klog.Infof("Starting OVN Service Controller: Using Endpoint Slices")
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		useLBGroups := bnc.clusterLoadBalancerGroupUUID != ""
+		// use 5 workers like most of the kubernetes controllers in the
+		// kubernetes controller-manager
+		err := bnc.svcController.Run(5, bnc.stopChan, runRepair, useLBGroups, bnc.svcTemplateSupport)
+		if err != nil {
+			klog.Errorf("Error running OVN Kubernetes Services controller: %v", err)
+		}
+	}()
+	return nil
 }

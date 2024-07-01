@@ -17,6 +17,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
 	logicalswitchmanager "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	kapi "k8s.io/api/core/v1"
@@ -566,10 +567,16 @@ func (bnc *BaseNetworkController) addLogicalPortToNetwork(pod *kapi.Pod, nadName
 
 	// add external ids
 	lsp.ExternalIDs = map[string]string{"namespace": pod.Namespace, "pod": "true"}
-	if bnc.IsSecondary() {
+	if bnc.IsPrimaryNetwork() && bnc.IsSecondary() {
 		lsp.ExternalIDs[ovntypes.NetworkExternalID] = bnc.GetNetworkName()
+		lsp.ExternalIDs[ovntypes.NetworkRoleExternalID] = types.NetworkRolePrimary
 		lsp.ExternalIDs[ovntypes.NADExternalID] = nadName
 		lsp.ExternalIDs[ovntypes.TopologyExternalID] = bnc.TopologyType()
+
+		if !bnc.IsPrimaryNetwork() {
+			lsp.ExternalIDs[ovntypes.NetworkRoleExternalID] = types.NetworkRoleSecondary
+		}
+
 	}
 
 	// CNI depends on the flows from port security, delay setting it until end

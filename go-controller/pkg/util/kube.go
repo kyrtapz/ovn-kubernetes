@@ -683,7 +683,7 @@ type K8sObject interface {
 	k8sruntime.Object
 }
 
-func ExternalIDsForObject(obj K8sObject) map[string]string {
+func ExternalIDsForLoadBalancer(obj K8sObject, network string, isDefault bool) map[string]string {
 	gk := obj.GetObjectKind().GroupVersionKind().GroupKind()
 	nsn := k8stypes.NamespacedName{
 		Namespace: obj.GetNamespace(),
@@ -698,9 +698,15 @@ func ExternalIDsForObject(obj K8sObject) map[string]string {
 		gk = kinds[0].GroupKind()
 	}
 
+	role := types.NetworkRoleDefault
+	if !isDefault {
+		role = types.NetworkRolePrimary
+	}
 	return map[string]string{
 		types.LoadBalancerOwnerExternalID: nsn.String(),
 		types.LoadBalancerKindExternalID:  gk.String(),
+		types.NetworkExternalID:           network,
+		types.NetworkRoleExternalID:       role,
 	}
 }
 

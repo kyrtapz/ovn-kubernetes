@@ -63,7 +63,7 @@ func (cm *NetworkControllerManager) NewNetworkController(nInfo util.NetInfo) (na
 	topoType := nInfo.TopologyType()
 	switch topoType {
 	case ovntypes.Layer3Topology:
-		return ovn.NewSecondaryLayer3NetworkController(cnci, nInfo), nil
+		return ovn.NewSecondaryLayer3NetworkController(cnci, nInfo)
 	case ovntypes.Layer2Topology:
 		return ovn.NewSecondaryLayer2NetworkController(cnci, nInfo), nil
 	case ovntypes.LocalnetTopology:
@@ -81,7 +81,7 @@ func (cm *NetworkControllerManager) newDummyNetworkController(topoType, netName 
 	netInfo, _ := util.NewNetInfo(&ovncnitypes.NetConf{NetConf: types.NetConf{Name: netName}, Topology: topoType})
 	switch topoType {
 	case ovntypes.Layer3Topology:
-		return ovn.NewSecondaryLayer3NetworkController(cnci, netInfo), nil
+		return ovn.NewSecondaryLayer3NetworkController(cnci, netInfo)
 	case ovntypes.Layer2Topology:
 		return ovn.NewSecondaryLayer2NetworkController(cnci, netInfo), nil
 	case ovntypes.LocalnetTopology:
@@ -94,8 +94,9 @@ func (cm *NetworkControllerManager) newDummyNetworkController(topoType, netName 
 func findAllSecondaryNetworkLogicalEntities(nbClient libovsdbclient.Client) ([]*nbdb.LogicalSwitch,
 	[]*nbdb.LogicalRouter, error) {
 	p1 := func(item *nbdb.LogicalSwitch) bool {
-		_, ok := item.ExternalIDs[ovntypes.NetworkExternalID]
-		return ok
+		_, hasNetworkExternalID := item.ExternalIDs[ovntypes.NetworkExternalID]
+		networkRole, hasNetworkRoleExternalID := item.ExternalIDs[ovntypes.NetworkRoleExternalID]
+		return hasNetworkExternalID && hasNetworkRoleExternalID && networkRole == ovntypes.NetworkRoleSecondary
 	}
 	nodeSwitches, err := libovsdbops.FindLogicalSwitchesWithPredicate(nbClient, p1)
 	if err != nil {
@@ -103,8 +104,9 @@ func findAllSecondaryNetworkLogicalEntities(nbClient libovsdbclient.Client) ([]*
 		return nil, nil, err
 	}
 	p2 := func(item *nbdb.LogicalRouter) bool {
-		_, ok := item.ExternalIDs[ovntypes.NetworkExternalID]
-		return ok
+		_, hasNetworkExternalID := item.ExternalIDs[ovntypes.NetworkExternalID]
+		networkRole, hasNetworkRoleExternalID := item.ExternalIDs[ovntypes.NetworkRoleExternalID]
+		return hasNetworkExternalID && hasNetworkRoleExternalID && networkRole == ovntypes.NetworkRoleSecondary
 	}
 	clusterRouters, err := libovsdbops.FindLogicalRoutersWithPredicate(nbClient, p2)
 	if err != nil {

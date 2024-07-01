@@ -14,8 +14,10 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/generator/udn"
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
+	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	zoneic "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/zone_interconnect"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
@@ -251,7 +253,7 @@ type SecondaryLayer3NetworkController struct {
 }
 
 // NewSecondaryLayer3NetworkController create a new OVN controller for the given secondary layer3 NAD
-func NewSecondaryLayer3NetworkController(cnci *CommonNetworkControllerInfo, netInfo util.NetInfo) *SecondaryLayer3NetworkController {
+func NewSecondaryLayer3NetworkController(cnci *CommonNetworkControllerInfo, netInfo util.NetInfo) (*SecondaryLayer3NetworkController, error) {
 
 	stopChan := make(chan struct{})
 	ipv4Mode, ipv6Mode := netInfo.IPMode()
@@ -261,6 +263,19 @@ func NewSecondaryLayer3NetworkController(cnci *CommonNetworkControllerInfo, netI
 	}
 
 	addressSetFactory := addressset.NewOvnAddressSetFactory(cnci.nbClient, ipv4Mode, ipv6Mode)
+
+	svcController, err := svccontroller.NewController(
+		cnci.client, cnci.nbClient,
+		cnci.watchFactory.ServiceCoreInformer(),
+		cnci.watchFactory.EndpointSliceCoreInformer(),
+		cnci.watchFactory.NodeCoreInformer(),
+		cnci.watchFactory.NADInformer().Lister(),
+		cnci.recorder,
+		netInfo,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create new service controller while creating new default network controller: %w", err)
+	}
 
 	oc := &SecondaryLayer3NetworkController{
 		BaseSecondaryNetworkController: BaseSecondaryNetworkController{
@@ -281,6 +296,7 @@ func NewSecondaryLayer3NetworkController(cnci *CommonNetworkControllerInfo, netI
 				localZoneNodes:              &sync.Map{},
 				zoneICHandler:               zoneICHandler,
 				cancelableCtx:               util.NewCancelableContext(),
+				svcController:               svcController,
 			},
 		},
 		mgmtPortFailed:              sync.Map{},
@@ -304,7 +320,7 @@ func NewSecondaryLayer3NetworkController(cnci *CommonNetworkControllerInfo, netI
 	oc.multicastSupport = false
 
 	oc.initRetryFramework()
-	return oc
+	return oc, nil
 }
 
 func (oc *SecondaryLayer3NetworkController) initRetryFramework() {
@@ -438,6 +454,16 @@ func (oc *SecondaryLayer3NetworkController) Run() error {
 	}
 
 	if err := oc.WatchNodes(); err != nil {
+		return err
+	}
+
+	startSvc := time.Now()
+	// Services should be started after nodes to prevent LB churn
+	err := oc.StartServiceController(oc.wg, true)
+	endSvc := time.Since(startSvc)
+	// TODO metric for services on secondary network?
+	metrics.MetricOVNKubeControllerSyncDuration.WithLabelValues("service").Set(endSvc.Seconds())
+	if err != nil {
 		return err
 	}
 
