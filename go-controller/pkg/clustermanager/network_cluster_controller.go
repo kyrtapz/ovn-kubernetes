@@ -151,7 +151,7 @@ func (ncc *networkClusterController) init() error {
 		return err
 	}
 
-	if ncc.hasNodeAllocation() {
+	if ncc.hasNodeAllocation() || (util.IsNetworkSegmentationSupportEnabled() && ncc.IsPrimaryNetwork()) {
 		ncc.retryNodes = ncc.newRetryFramework(factory.NodeType, true)
 
 		ncc.nodeAllocator = node.NewNodeAllocator(networkID, ncc.NetInfo, ncc.watchFactory.NodeCoreInformer().Lister(), ncc.kube)
@@ -215,7 +215,7 @@ func (ncc *networkClusterController) Start(ctx context.Context) error {
 		return err
 	}
 
-	if ncc.hasNodeAllocation() {
+	if ncc.hasNodeAllocation() || (util.IsNetworkSegmentationSupportEnabled() && ncc.IsPrimaryNetwork()) {
 		nodeHandler, err := ncc.retryNodes.WatchResource()
 		if err != nil {
 			return fmt.Errorf("unable to watch pods: %w", err)

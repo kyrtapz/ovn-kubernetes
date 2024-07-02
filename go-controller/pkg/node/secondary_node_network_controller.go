@@ -20,8 +20,9 @@ type SecondaryNodeNetworkController struct {
 	BaseNodeNetworkController
 	// pod events factory handler
 	podHandler *factory.Handler
-	// stores the networkID of this network
-	networkID *int
+
+	networkID int
+
 	// responsible for programing gateway elements for this network
 	gateway *UserDefinedNetworkGateway
 }
@@ -88,17 +89,26 @@ func (nc *SecondaryNodeNetworkController) Cleanup() error {
 	return nil
 }
 
-func (oc *SecondaryNodeNetworkController) getNetworkID() (int, error) {
-	if oc.networkID == nil || *oc.networkID == util.InvalidNetworkID {
-		oc.networkID = ptr.To(util.InvalidNetworkID)
-		nodes, err := oc.watchFactory.GetNodes()
+// TODO(dceara): identical to BaseSecondaryNetworkController.ensureNetworkID()
+func (nc *SecondaryNodeNetworkController) ensureNetworkID() error {
+	if nc.networkID != 0 {
+		return nil
+	}
+	nodes, err := nc.watchFactory.GetNodes()
+	if err != nil {
+		return fmt.Errorf("failed to get nodes: %v", err)
+	}
+	networkID := util.InvalidNetworkID
+	for _, node := range nodes {
+		networkID, err = util.ParseNetworkIDAnnotation(node, nc.GetNetworkName())
 		if err != nil {
-			return util.InvalidNetworkID, err
-		}
-		*oc.networkID, err = util.GetNetworkID(nodes, oc.NetInfo)
-		if err != nil {
-			return util.InvalidNetworkID, err
+			//TODO Warning
+			continue
 		}
 	}
-	return *oc.networkID, nil
+	if networkID == util.InvalidNetworkID {
+		return fmt.Errorf("missing network id for network '%s'", nc.GetNetworkName())
+	}
+	nc.networkID = networkID
+	return nil
 }
