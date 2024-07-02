@@ -84,6 +84,7 @@ type nodePortWatcher struct {
 	ofm             *openflowManager
 	nodeIPManager   *addressManager
 	watchFactory    factory.NodeWatchFactory
+	netInfo         util.NetInfo
 }
 
 type serviceConfig struct {
@@ -853,7 +854,7 @@ func (npw *nodePortWatcher) AddEndpointSlice(epSlice *discovery.EndpointSlice) e
 	// Here we make sure the correct rules are programmed whenever an AddEndpointSlice event is
 	// received, only alter flows if we need to, i.e if cache wasn't set or if it was and
 	// hasLocalHostNetworkEp or localEndpoints state (for LB svc where NPs=0) changed, to prevent flow churn
-	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(epSlice)
+	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(epSlice, npw.netInfo.IsDefault())
 	if err != nil {
 		return fmt.Errorf("cannot add %s/%s to nodePortWatcher: %v", epSlice.Namespace, epSlice.Name, err)
 	}
@@ -885,7 +886,7 @@ func (npw *nodePortWatcher) DeleteEndpointSlice(epSlice *discovery.EndpointSlice
 
 	klog.V(5).Infof("Deleting endpointslice %s in namespace %s", epSlice.Name, epSlice.Namespace)
 	// remove rules for endpoints and add back normal ones
-	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(epSlice)
+	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(epSlice, npw.netInfo.IsDefault())
 	if err != nil {
 		return fmt.Errorf("cannot delete %s/%s from nodePortWatcher: %v", epSlice.Namespace, epSlice.Name, err)
 	}
@@ -936,7 +937,7 @@ func (npw *nodePortWatcher) UpdateEndpointSlice(oldEpSlice, newEpSlice *discover
 	var err error
 	var errors []error
 
-	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(newEpSlice)
+	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(newEpSlice, npw.netInfo.IsDefault())
 	if err != nil {
 		return fmt.Errorf("cannot update %s/%s in nodePortWatcher: %v", newEpSlice.Namespace, newEpSlice.Name, err)
 	}
@@ -1777,9 +1778,9 @@ func initSvcViaMgmPortRoutingRules(hostSubnets []*net.IPNet) error {
 
 func newSharedGateway(nodeName string, subnets []*net.IPNet, gwNextHops []net.IP, gwIntf, egressGWIntf string,
 	gwIPs []*net.IPNet, nodeAnnotator kube.Annotator, kube kube.Interface, cfg *managementPortConfig,
-	watchFactory factory.NodeWatchFactory, routeManager *routemanager.Controller) (*gateway, error) {
+	watchFactory factory.NodeWatchFactory, routeManager *routemanager.Controller, netInfo util.NetInfo) (*gateway, error) {
 	klog.Info("Creating new shared gateway")
-	gw := &gateway{}
+	gw := &gateway{netInfo: netInfo}
 
 	gwBridge, exGwBridge, err := gatewayInitInternal(
 		nodeName, gwIntf, egressGWIntf, gwNextHops, gwIPs, nodeAnnotator)
@@ -1874,7 +1875,7 @@ func newSharedGateway(nodeName string, subnets []*net.IPNet, gwNextHops []net.IP
 				}
 			}
 			klog.Info("Creating Shared Gateway Node Port Watcher")
-			gw.nodePortWatcher, err = newNodePortWatcher(gwBridge, gw.openflowManager, gw.nodeIPManager, watchFactory)
+			gw.nodePortWatcher, err = newNodePortWatcher(gwBridge, gw.openflowManager, gw.nodeIPManager, watchFactory, gw.netInfo)
 			if err != nil {
 				return err
 			}
@@ -1895,7 +1896,7 @@ func newSharedGateway(nodeName string, subnets []*net.IPNet, gwNextHops []net.IP
 }
 
 func newNodePortWatcher(gwBridge *bridgeConfiguration, ofm *openflowManager,
-	nodeIPManager *addressManager, watchFactory factory.NodeWatchFactory) (*nodePortWatcher, error) {
+	nodeIPManager *addressManager, watchFactory factory.NodeWatchFactory, netInfo util.NetInfo) (*nodePortWatcher, error) {
 	// Get ofport of patchPort
 	// TODO(dceara): for now we only support node ports on the default
 	// network
@@ -1968,6 +1969,7 @@ func newNodePortWatcher(gwBridge *bridgeConfiguration, ofm *openflowManager,
 		nodeIPManager: nodeIPManager,
 		ofm:           ofm,
 		watchFactory:  watchFactory,
+		netInfo:       netInfo,
 	}
 	return npw, nil
 }

@@ -61,6 +61,8 @@ type gateway struct {
 	watchFactory *factory.WatchFactory // used for retry
 	stopChan     <-chan struct{}
 	wg           *sync.WaitGroup
+
+	netInfo util.NetInfo
 }
 
 // TODO(dceara): move?
@@ -285,17 +287,26 @@ func (g *gateway) Init(stopChan <-chan struct{}, wg *sync.WaitGroup) error {
 	if util.IsNetworkSegmentationSupportEnabled() {
 		// Filter out objects without the default serviceName label to exclude mirrored EndpointSlices
 		// Only default EndpointSlices contain the discovery.LabelServiceName label
-		req, err := labels.NewRequirement(discovery.LabelServiceName, selection.Exists, nil)
+		var label string
+		if g.netInfo.IsDefault() {
+			label = discovery.LabelServiceName
+		} else {
+
+			label = types.LabelUserDefinedServiceName
+		}
+		req, err := labels.NewRequirement(label, selection.Exists, nil)
 		if err != nil {
 			return err
 		}
+
 		if _, err = endpointSlicesRetryFramework.WatchResourceFiltered("", labels.NewSelector().Add(*req)); err != nil {
 			return fmt.Errorf("gateway init failed to start watching endpointslices: %v", err)
 		}
 		return nil
-	}
-	if _, err = endpointSlicesRetryFramework.WatchResource(); err != nil {
-		return fmt.Errorf("gateway init failed to start watching endpointslices: %v", err)
+	} else {
+		if _, err = endpointSlicesRetryFramework.WatchResource(); err != nil {
+			return fmt.Errorf("gateway init failed to start watching endpointslices: %v", err)
+		}
 	}
 	return nil
 }

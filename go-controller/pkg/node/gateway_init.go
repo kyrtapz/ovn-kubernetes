@@ -318,7 +318,7 @@ func (nc *DefaultNodeNetworkController) initGateway(subnets []*net.IPNet, nodeAn
 	var portClaimWatcher *portClaimWatcher
 
 	if config.Gateway.NodeportEnable && config.OvnKubeNode.Mode == types.NodeModeFull {
-		loadBalancerHealthChecker = newLoadBalancerHealthChecker(nc.name, nc.watchFactory)
+		loadBalancerHealthChecker = newLoadBalancerHealthChecker(nc.name, nc.watchFactory, nc.NetInfo)
 		portClaimWatcher, err = newPortClaimWatcher(nc.recorder)
 		if err != nil {
 			return err
@@ -358,11 +358,11 @@ func (nc *DefaultNodeNetworkController) initGateway(subnets []*net.IPNet, nodeAn
 	case config.GatewayModeLocal:
 		klog.Info("Preparing Local Gateway")
 		gw, err = newLocalGateway(nc.name, subnets, gatewayNextHops, gatewayIntf, egressGWInterface, ifAddrs, nodeAnnotator,
-			managementPortConfig, nc.Kube, nc.watchFactory, nc.routeManager)
+			managementPortConfig, nc.Kube, nc.watchFactory, nc.routeManager, nc.NetInfo)
 	case config.GatewayModeShared:
 		klog.Info("Preparing Shared Gateway")
 		gw, err = newSharedGateway(nc.name, subnets, gatewayNextHops, gatewayIntf, egressGWInterface, ifAddrs, nodeAnnotator, nc.Kube,
-			managementPortConfig, nc.watchFactory, nc.routeManager)
+			managementPortConfig, nc.watchFactory, nc.routeManager, nc.NetInfo)
 	case config.GatewayModeDisabled:
 		var chassisID string
 		klog.Info("Gateway Mode is disabled")
@@ -396,6 +396,7 @@ func (nc *DefaultNodeNetworkController) initGateway(subnets []*net.IPNet, nodeAn
 	}
 
 	initGwFunc := func() error {
+		// TODO here it spawns another watcher for services and endpointslices
 		return gw.Init(nc.stopChan, nc.wg)
 	}
 
@@ -484,7 +485,7 @@ func (nc *DefaultNodeNetworkController) initGatewayDPUHost(kubeNodeIP net.IP) er
 			return err
 		}
 		gw.nodePortWatcherIptables = newNodePortWatcherIptables()
-		gw.loadBalancerHealthChecker = newLoadBalancerHealthChecker(nc.name, nc.watchFactory)
+		gw.loadBalancerHealthChecker = newLoadBalancerHealthChecker(nc.name, nc.watchFactory, gw.netInfo)
 		portClaimWatcher, err := newPortClaimWatcher(nc.recorder)
 		if err != nil {
 			return err

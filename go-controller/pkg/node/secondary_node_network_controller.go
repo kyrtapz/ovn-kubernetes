@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 )
 
@@ -32,7 +34,7 @@ type SecondaryNodeNetworkController struct {
 // NewSecondaryNodeNetworkController creates a new OVN controller for creating logical network
 // infrastructure and policy for default l3 network
 func NewSecondaryNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, netInfo util.NetInfo, gwManager NodeSecondaryGatewayManager) *SecondaryNodeNetworkController {
-	return &SecondaryNodeNetworkController{
+	nc := &SecondaryNodeNetworkController{
 		BaseNodeNetworkController: BaseNodeNetworkController{
 			CommonNodeNetworkControllerInfo: *cnnci,
 			NetInfo:                         netInfo,
@@ -41,6 +43,8 @@ func NewSecondaryNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, n
 		},
 		gatewayManager: gwManager,
 	}
+	nc.initRetryFrameworkForNode()
+	return nc
 }
 
 // Start starts the default controller; handles all events and creates all needed logical entities
@@ -73,6 +77,34 @@ func (nc *SecondaryNodeNetworkController) Start(ctx context.Context) error {
 
 	if err := nc.gatewayManager.AddNetwork(nc.NetInfo, masqCTMark); err != nil {
 		return fmt.Errorf("failed to add network to node gateway for network '%s': %w", nc.GetNetworkName(), err)
+	}
+
+	err := nc.WatchEndpointSlices() // TODO call it also from secondary node network controller
+	if err != nil {
+		return fmt.Errorf("failed to watch endpointSlices: %w", err)
+	}
+
+	// TODO for now using config.Default.Zone;
+	// TODO sbZone should not be recomputed, but passed from default node network controller
+
+	// If interconnect is disabled OR interconnect is running in single-zone-mode,
+	// the ovnkube-master is responsible for patching ICNI managed namespaces with
+	// "k8s.ovn.org/external-gw-pod-ips". In that case, we need ovnkube-node to flush
+	// conntrack on every node. In multi-zone-interconnect case, we will handle the flushing
+	// directly on the ovnkube-controller code to avoid an extra namespace annotation
+	if !config.OVNKubernetesFeature.EnableInterconnect || config.Default.Zone == types.OvnDefaultZone {
+		err := nc.WatchNamespaces()
+		if err != nil {
+			return fmt.Errorf("failed to watch namespaces: %w", err)
+		}
+		// every minute cleanup stale conntrack entries if any
+		go wait.Until(func() {
+			nc.checkAndDeleteStaleConntrackEntries()
+		}, time.Minute*1, nc.stopChan)
+	}
+	err = nc.WatchEndpointSlices() // TODO call it also from secondary node network controller
+	if err != nil {
+		return fmt.Errorf("failed to watch endpointSlices: %w", err)
 	}
 
 	return nil

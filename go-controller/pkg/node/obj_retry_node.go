@@ -7,6 +7,7 @@ import (
 	kapi "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
 	cache "k8s.io/client-go/tools/cache"
+	"k8s.io/klog/v2"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
@@ -19,7 +20,7 @@ type nodeEventHandler struct {
 	retry.DefaultEventHandler
 
 	objType  reflect.Type
-	nc       *DefaultNodeNetworkController
+	nc       *BaseNodeNetworkController
 	syncFunc func([]interface{}) error
 }
 
@@ -32,7 +33,7 @@ type nodeEventHandler struct {
 // shared informer and a sync function to process all objects of this type at startup.
 // In order to create a retry framework for most resource types, newRetryFrameworkNode is
 // to be preferred, as it calls newRetryFrameworkNodeWithParameters with all optional parameters unset.
-func (nc *DefaultNodeNetworkController) newRetryFrameworkNodeWithParameters(
+func (nc *BaseNodeNetworkController) newRetryFrameworkNodeWithParameters(
 	objectType reflect.Type,
 	syncFunc func([]interface{}) error) *retry.RetryFramework {
 
@@ -56,7 +57,7 @@ func (nc *DefaultNodeNetworkController) newRetryFrameworkNodeWithParameters(
 // as defined for that type. This constructor is used for resources (1) that do not need
 // any namespace or label filtering in their shared informer, (2) whose sync function
 // is assigned statically based on the resource type.
-func (nc *DefaultNodeNetworkController) newRetryFrameworkNode(objectType reflect.Type) *retry.RetryFramework {
+func (nc *BaseNodeNetworkController) newRetryFrameworkNode(objectType reflect.Type) *retry.RetryFramework {
 	return nc.newRetryFrameworkNodeWithParameters(objectType, nil)
 }
 
@@ -144,6 +145,7 @@ func (h *nodeEventHandler) GetResourceFromInformerCache(key string) (interface{}
 // specified object to the cluster according to its type and returns the error,
 // if any, yielded during object creation.
 func (h *nodeEventHandler) AddResource(obj interface{}, fromRetryLoop bool) error {
+	klog.Infof("riccardo: AddResource called on network %s", h.nc.GetNetworkName())
 	switch h.objType {
 	case factory.NamespaceExGwType,
 		factory.EndpointSliceForStaleConntrackRemovalType:
@@ -160,8 +162,11 @@ func (h *nodeEventHandler) AddResource(obj interface{}, fromRetryLoop bool) erro
 // and returns the error, if any, yielded during the object update. The inRetryCache
 // boolean argument is to indicate if the given resource is in the retryCache or not.
 func (h *nodeEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCache bool) error {
+	klog.Infof("riccardo: UpdateResource called on network %s", h.nc.GetNetworkName())
 	switch h.objType {
 	case factory.NamespaceExGwType:
+		klog.Infof("riccardo: UpdateResource on NamespaceExGwType called on network %s", h.nc.GetNetworkName())
+
 		// If interconnect is disabled OR interconnect is running in single-zone-mode,
 		// the ovnkube-master is responsible for patching ICNI managed namespaces with
 		// "k8s.ovn.org/external-gw-pod-ips". In that case, we need ovnkube-node to flush
@@ -178,6 +183,7 @@ func (h *nodeEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCac
 		return nil
 
 	case factory.EndpointSliceForStaleConntrackRemovalType:
+		klog.Infof("riccardo: UpdateResource on EndpointSliceForStaleConntrackRemovalType called on network %s", h.nc.GetNetworkName())
 		oldEndpointSlice := oldObj.(*discovery.EndpointSlice)
 		newEndpointSlice := newObj.(*discovery.EndpointSlice)
 		return h.nc.reconcileConntrackUponEndpointSliceEvents(
@@ -193,12 +199,16 @@ func (h *nodeEventHandler) UpdateResource(oldObj, newObj interface{}, inRetryCac
 // cachedObj is the internal cache entry for this object, used for now for pods and network
 // policies.
 func (h *nodeEventHandler) DeleteResource(obj, cachedObj interface{}) error {
+	klog.Infof("riccardo: DeleteResource called on network %s", h.nc.GetNetworkName())
 	switch h.objType {
 	case factory.NamespaceExGwType:
 		// no action needed upon delete event
+		klog.Infof("riccardo: DeleteResource on NamespaceExGwType called on network %s", h.nc.GetNetworkName())
 		return nil
 
 	case factory.EndpointSliceForStaleConntrackRemovalType:
+		klog.Infof("riccardo: DeleteResource on EndpointSliceForStaleConntrackRemovalType called on network %s", h.nc.GetNetworkName())
+
 		endpointslice := obj.(*discovery.EndpointSlice)
 		return h.nc.reconcileConntrackUponEndpointSliceEvents(endpointslice, nil)
 
@@ -209,6 +219,7 @@ func (h *nodeEventHandler) DeleteResource(obj, cachedObj interface{}) error {
 
 func (h *nodeEventHandler) SyncFunc(objs []interface{}) error {
 	var syncFunc func([]interface{}) error
+	klog.Infof("riccardo: SyncFunc called on network %s", h.nc.GetNetworkName())
 
 	if h.syncFunc != nil {
 		// syncFunc was provided explicitly

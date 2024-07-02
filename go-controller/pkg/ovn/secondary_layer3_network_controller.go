@@ -459,6 +459,7 @@ func (oc *SecondaryLayer3NetworkController) Run() error {
 
 	startSvc := time.Now()
 	// Services should be started after nodes to prevent LB churn
+	klog.Info("riccardo: Starting layer3 secondary service controller")
 	err := oc.StartServiceController(oc.wg, true)
 	endSvc := time.Since(startSvc)
 	// TODO metric for services on secondary network?

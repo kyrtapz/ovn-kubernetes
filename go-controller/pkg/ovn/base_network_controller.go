@@ -1101,7 +1101,7 @@ func (bnc *BaseNetworkController) findMigratablePodIPsForSubnets(subnets []*net.
 }
 
 func (bnc *BaseNetworkController) StartServiceController(wg *sync.WaitGroup, runRepair bool) error {
-	klog.Infof("Starting OVN Service Controller: Using Endpoint Slices")
+	klog.Infof("riccardo: Starting OVN Service Controller for network %s: Using Endpoint Slices", bnc.GetNetworkName())
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

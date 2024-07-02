@@ -863,14 +863,21 @@ func HasLocalHostNetworkEndpoints(localEndpointAddresses sets.Set[string], nodeA
 
 // ServiceNamespacedNameFromEndpointSlice returns the namespaced name of the service
 // that corresponds to the given endpointSlice
-func ServiceNamespacedNameFromEndpointSlice(endpointSlice *discovery.EndpointSlice) (k8stypes.NamespacedName, error) {
+func ServiceNamespacedNameFromEndpointSlice(endpointSlice *discovery.EndpointSlice, isDefaultClusterNetwork bool) (k8stypes.NamespacedName, error) {
 	var serviceNamespacedName k8stypes.NamespacedName
-	svcName := endpointSlice.Labels[discovery.LabelServiceName]
+	var svcName, label string
+	if isDefaultClusterNetwork {
+		label = discovery.LabelServiceName
+	} else {
+		label = types.LabelUserDefinedServiceName
+	}
+	svcName = endpointSlice.Labels[label]
+
 	if svcName == "" {
 		// should not happen, since the informer already filters out endpoint slices with an empty service label
 		return serviceNamespacedName,
-			fmt.Errorf("endpointslice %s/%s: empty value for label %s",
-				endpointSlice.Namespace, endpointSlice.Name, discovery.LabelServiceName)
+			fmt.Errorf("endpointslice %s/%s: empty value for label %s, endpointslice=%+v",
+				endpointSlice.Namespace, endpointSlice.Name, label, endpointSlice)
 	}
 	return k8stypes.NamespacedName{Namespace: endpointSlice.Namespace, Name: svcName}, nil
 }

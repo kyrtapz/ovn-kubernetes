@@ -22,7 +22,6 @@ import (
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
 
-	"github.com/containernetworking/plugins/pkg/ip"
 	v1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	honode "github.com/ovn-org/ovn-kubernetes/go-controller/hybrid-overlay/pkg/controller"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
@@ -43,6 +42,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	utilerrors "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util/errors"
 
+	"github.com/containernetworking/plugins/pkg/ip"
 	"github.com/vishvananda/netlink"
 )
 
@@ -72,6 +72,18 @@ type BaseNodeNetworkController struct {
 	// stopChan and WaitGroup per controller
 	stopChan chan struct{}
 	wg       *sync.WaitGroup
+
+	// retry framework for namespaces, used for the removal of stale conntrack entries for external gateways
+	retryNamespaces *retry.RetryFramework // TODO will have to move to base node network controller
+	// retry framework for endpoint slices, used for the removal of stale conntrack entries for services
+	retryEndpointSlices *retry.RetryFramework // TODO will have to move to base node network controller
+
+	apbExternalRouteNodeController *apbroute.ExternalGatewayNodeController
+}
+
+func (nc *BaseNodeNetworkController) initRetryFrameworkForNode() {
+	nc.retryNamespaces = nc.newRetryFrameworkNode(factory.NamespaceExGwType)
+	nc.retryEndpointSlices = nc.newRetryFrameworkNode(factory.EndpointSliceForStaleConntrackRemovalType)
 }
 
 func newCommonNodeNetworkControllerInfo(kubeClient clientset.Interface, kube kube.Interface, apbExternalRouteClient adminpolicybasedrouteclientset.Interface,
@@ -109,13 +121,6 @@ type DefaultNodeNetworkController struct {
 	// Node healthcheck server for cloud load balancers
 	healthzServer *proxierHealthUpdater
 	routeManager  *routemanager.Controller
-
-	// retry framework for namespaces, used for the removal of stale conntrack entries for external gateways
-	retryNamespaces *retry.RetryFramework
-	// retry framework for endpoint slices, used for the removal of stale conntrack entries for services
-	retryEndpointSlices *retry.RetryFramework
-
-	apbExternalRouteNodeController *apbroute.ExternalGatewayNodeController
 }
 
 // TODO(dceara): move?
@@ -170,11 +175,6 @@ func NewDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo) (*D
 	nc.initRetryFrameworkForNode()
 
 	return nc, nil
-}
-
-func (nc *DefaultNodeNetworkController) initRetryFrameworkForNode() {
-	nc.retryNamespaces = nc.newRetryFrameworkNode(factory.NamespaceExGwType)
-	nc.retryEndpointSlices = nc.newRetryFrameworkNode(factory.EndpointSliceForStaleConntrackRemovalType)
 }
 
 func clearOVSFlowTargets() error {
@@ -724,10 +724,6 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 		nc.routeManager.Run(nc.stopChan, 4*time.Minute)
 	}()
 
-	if err = configureGlobalForwarding(); err != nil {
-		return err
-	}
-
 	// Bootstrap flows in OVS if just normal flow is present
 	if err := bootstrapOVSFlows(nc.name); err != nil {
 		return fmt.Errorf("failed to bootstrap OVS flows: %w", err)
@@ -1084,7 +1080,7 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 				nc.checkAndDeleteStaleConntrackEntries()
 			}, time.Minute*1, nc.stopChan)
 		}
-		err = nc.WatchEndpointSlices()
+		err = nc.WatchEndpointSlices() // TODO call it also from secondary node network controller
 		if err != nil {
 			return fmt.Errorf("failed to watch endpointSlices: %w", err)
 		}
@@ -1203,13 +1199,13 @@ func (nc *DefaultNodeNetworkController) startEgressIPHealthCheckingServer(mgmtPo
 	return nil
 }
 
-func (nc *DefaultNodeNetworkController) reconcileConntrackUponEndpointSliceEvents(oldEndpointSlice, newEndpointSlice *discovery.EndpointSlice) error {
+func (nc *BaseNodeNetworkController) reconcileConntrackUponEndpointSliceEvents(oldEndpointSlice, newEndpointSlice *discovery.EndpointSlice) error {
 	var errors []error
 	if oldEndpointSlice == nil {
 		// nothing to do upon an add event
 		return nil
 	}
-	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(oldEndpointSlice)
+	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(oldEndpointSlice, nc.IsDefault())
 	if err != nil {
 		return fmt.Errorf("cannot reconcile conntrack: %v", err)
 	}
@@ -1241,18 +1237,32 @@ func (nc *DefaultNodeNetworkController) reconcileConntrackUponEndpointSliceEvent
 	return utilerrors.Join(errors...)
 
 }
-func (nc *DefaultNodeNetworkController) WatchEndpointSlices() error {
+func (nc *BaseNodeNetworkController) WatchEndpointSlices() error {
+	var err error
 	if util.IsNetworkSegmentationSupportEnabled() {
 		// Filter out objects without the default serviceName label to exclude mirrored EndpointSlices
 		// Only default EndpointSlices contain the discovery.LabelServiceName label
-		req, err := labels.NewRequirement(discovery.LabelServiceName, selection.Exists, nil)
+		var label string
+		if nc.NetInfo.IsDefault() {
+			label = discovery.LabelServiceName
+		} else {
+
+			label = types.LabelUserDefinedServiceName
+		}
+		req, err := labels.NewRequirement(label, selection.Exists, nil)
 		if err != nil {
 			return err
 		}
-		_, err = nc.retryEndpointSlices.WatchResourceFiltered("", labels.NewSelector().Add(*req))
-		return err
+
+		if _, err = nc.retryEndpointSlices.WatchResourceFiltered("", labels.NewSelector().Add(*req)); err != nil {
+			return fmt.Errorf("gateway init failed to start watching endpointslices: %v", err)
+		}
+		return nil
+	} else {
+		if _, err = nc.retryEndpointSlices.WatchResource(); err != nil {
+			return fmt.Errorf("gateway init failed to start watching endpointslices: %v", err)
+		}
 	}
-	_, err := nc.retryEndpointSlices.WatchResource()
 	return err
 }
 
@@ -1264,7 +1274,7 @@ func exGatewayPodsAnnotationsChanged(oldNs, newNs *kapi.Namespace) bool {
 		(oldNs.Annotations[util.RoutingExternalGWsAnnotation] != newNs.Annotations[util.RoutingExternalGWsAnnotation])
 }
 
-func (nc *DefaultNodeNetworkController) checkAndDeleteStaleConntrackEntries() {
+func (nc *BaseNodeNetworkController) checkAndDeleteStaleConntrackEntries() {
 	namespaces, err := nc.watchFactory.GetNamespaces()
 	if err != nil {
 		klog.Errorf("Unable to get pods from informer: %v", err)
@@ -1286,7 +1296,9 @@ func (nc *DefaultNodeNetworkController) checkAndDeleteStaleConntrackEntries() {
 	}
 }
 
-func (nc *DefaultNodeNetworkController) syncConntrackForExternalGateways(newNs *kapi.Namespace) error {
+func (nc *BaseNodeNetworkController) syncConntrackForExternalGateways(newNs *kapi.Namespace) error {
+	klog.Infof("riccardo: syncConntrackForExternalGateways for network %s", nc.GetNetworkName())
+
 	gatewayIPs, err := nc.apbExternalRouteNodeController.GetAdminPolicyBasedExternalRouteIPsForTargetNamespace(newNs.Name)
 	if err != nil {
 		return fmt.Errorf("unable to retrieve gateway IPs for Admin Policy Based External Route objects: %w", err)
@@ -1300,7 +1312,8 @@ func (nc *DefaultNodeNetworkController) syncConntrackForExternalGateways(newNs *
 	})
 }
 
-func (nc *DefaultNodeNetworkController) WatchNamespaces() error {
+func (nc *BaseNodeNetworkController) WatchNamespaces() error {
+	klog.Infof("riccardo: WatchNamespaces for network %s", nc.GetNetworkName())
 	_, err := nc.retryNamespaces.WatchResource()
 	return err
 }
@@ -1362,44 +1375,4 @@ func DummyNextHopIPs() []net.IP {
 		nextHops = append(nextHops, config.Gateway.MasqueradeIPs.V6DummyNextHopMasqueradeIP)
 	}
 	return nextHops
-}
-
-// configureGlobalForwarding configures the global forwarding settings.
-// It sets the FORWARD policy to DROP/ACCEPT based on the config.Gateway.DisableForwarding value for all enabled IP families.
-// For IPv6 it additionally always enables the global forwarding.
-func configureGlobalForwarding() error {
-	// Global forwarding works differently for IPv6:
-	//   conf/all/forwarding - BOOLEAN
-	//    Enable global IPv6 forwarding between all interfaces.
-	//	  IPv4 and IPv6 work differently here; e.g. netfilter must be used
-	//	  to control which interfaces may forward packets and which not.
-	// https://www.kernel.org/doc/Documentation/networking/ip-sysctl.txt
-	//
-	// It is not possible to configure the IPv6 forwarding per interface by
-	// setting the net.ipv6.conf.<ifname>.forwarding sysctl. Instead,
-	// the opposite approach is required where the global forwarding
-	// is enabled and an iptables rule is added to restrict it by default.
-	if config.IPv6Mode {
-		if err := ip.EnableIP6Forward(); err != nil {
-			return fmt.Errorf("could not set the correct global forwarding value for ipv6:  %w", err)
-		}
-
-	}
-
-	for _, proto := range clusterIPTablesProtocols() {
-		ipt, err := util.GetIPTablesHelper(proto)
-		if err != nil {
-			return fmt.Errorf("failed to get the iptables helper: %w", err)
-		}
-
-		target := "ACCEPT"
-		if config.Gateway.DisableForwarding {
-			target = "DROP"
-
-		}
-		if err := ipt.ChangePolicy("filter", "FORWARD", target); err != nil {
-			return fmt.Errorf("failed to change the forward policy to %q: %w", target, err)
-		}
-	}
-	return nil
 }

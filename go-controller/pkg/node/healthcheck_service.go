@@ -26,15 +26,17 @@ type loadBalancerHealthChecker struct {
 	services     map[ktypes.NamespacedName]uint16
 	endpoints    map[ktypes.NamespacedName]int
 	watchFactory factory.NodeWatchFactory
+	netInfo      util.NetInfo
 }
 
-func newLoadBalancerHealthChecker(nodeName string, watchFactory factory.NodeWatchFactory) *loadBalancerHealthChecker {
+func newLoadBalancerHealthChecker(nodeName string, watchFactory factory.NodeWatchFactory, netInfo util.NetInfo) *loadBalancerHealthChecker {
 	return &loadBalancerHealthChecker{
 		nodeName:     nodeName,
 		server:       healthcheck.NewServer(nodeName, nil, nil, nil),
 		services:     make(map[ktypes.NamespacedName]uint16),
 		endpoints:    make(map[ktypes.NamespacedName]int),
 		watchFactory: watchFactory,
+		netInfo:      netInfo,
 	}
 }
 
@@ -100,7 +102,7 @@ func (l *loadBalancerHealthChecker) SyncServices(svcs []interface{}) error {
 }
 
 func (l *loadBalancerHealthChecker) SyncEndPointSlices(epSlice *discovery.EndpointSlice) error {
-	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(epSlice)
+	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(epSlice, l.netInfo.IsDefault())
 	if err != nil {
 		return fmt.Errorf("skipping %s/%s: %v", epSlice.Namespace, epSlice.Name, err)
 	}
@@ -122,7 +124,7 @@ func (l *loadBalancerHealthChecker) SyncEndPointSlices(epSlice *discovery.Endpoi
 }
 
 func (l *loadBalancerHealthChecker) AddEndpointSlice(epSlice *discovery.EndpointSlice) error {
-	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(epSlice)
+	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(epSlice, l.netInfo.IsDefault())
 	if err != nil {
 		return fmt.Errorf("cannot add %s/%s to loadBalancerHealthChecker: %v", epSlice.Namespace, epSlice.Name, err)
 	}
@@ -135,7 +137,7 @@ func (l *loadBalancerHealthChecker) AddEndpointSlice(epSlice *discovery.Endpoint
 }
 
 func (l *loadBalancerHealthChecker) UpdateEndpointSlice(oldEpSlice, newEpSlice *discovery.EndpointSlice) error {
-	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(newEpSlice)
+	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(newEpSlice, l.netInfo.IsDefault())
 	if err != nil {
 		return fmt.Errorf("cannot update %s/%s in loadBalancerHealthChecker: %v",
 			newEpSlice.Namespace, newEpSlice.Name, err)
