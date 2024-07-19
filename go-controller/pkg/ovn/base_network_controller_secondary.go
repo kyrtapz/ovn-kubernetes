@@ -320,6 +320,9 @@ func (bsnc *BaseSecondaryNetworkController) addLogicalPortToNetworkForNAD(pod *k
 			return err
 		}
 		bsnc.logicalPortCache.remove(pod, nadName)
+
+	} else if !requiresLogicalPort {
+		return nil
 	}
 
 	if podAnnotation == nil {
