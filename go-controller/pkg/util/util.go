@@ -420,6 +420,35 @@ func GetActiveNetworkForNamespace(namespace string, nadLister nadlister.NetworkA
 	return nil, &UnknownActiveNetworkError{namespace: namespace}
 }
 
+var NoNADError = fmt.Errorf("No NADs found")
+
+func GetNamespacesForActivePrimaryNetwork(network string, nadLister nadlister.NetworkAttachmentDefinitionLister) ([]string, error) {
+	var namespaces []string
+
+	if !IsNetworkSegmentationSupportEnabled() { // TODO maybe don't even check? the calling function should check it first
+		return nil, nil
+	}
+	NADs, err := nadLister.List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+
+	if len(NADs) == 0 {
+		return nil, NoNADError
+	}
+	for _, nad := range NADs {
+		netInfo, err := ParseNADInfo(nad)
+		if err != nil {
+			return nil, err
+		}
+		if netInfo.GetNetworkName() == network {
+			namespaces = append(namespaces, nad.Namespace)
+		}
+	}
+	klog.Infof("riccardo [GetNamespacesForActivePrimaryNetwork] namespaces for network=%s are: %s", network, namespaces)
+	return namespaces, nil
+}
+
 func GetSecondaryNetworkLogicalPortName(podNamespace, podName, nadName string) string {
 	return GetSecondaryNetworkPrefix(nadName) + composePortName(podNamespace, podName)
 }
