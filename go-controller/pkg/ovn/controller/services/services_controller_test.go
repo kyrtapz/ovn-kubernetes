@@ -8,10 +8,12 @@ import (
 	"testing"
 
 	cnitypes "github.com/containernetworking/cni/pkg/types"
-	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
 	"github.com/onsi/gomega/format"
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
+	"github.com/urfave/cli/v2"
+	"golang.org/x/exp/maps"
+
 	ovncnitypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	globalconfig "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
@@ -22,8 +24,6 @@ import (
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
-	"github.com/urfave/cli/v2"
-	"golang.org/x/exp/maps"
 
 	v1 "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
@@ -109,7 +109,6 @@ func newControllerWithDBSetup(dbSetup libovsdbtest.TestSetup) (*serviceControlle
 // }
 
 func newControllerWithDBSetupForNetwork(dbSetup libovsdbtest.TestSetup, netInfo util.NetInfo, addNAD bool) (*serviceController, error) {
-	gomega.RegisterFailHandler(ginkgo.Fail)
 	nbClient, cleanup, err := libovsdbtest.NewNBTestHarness(dbSetup, nil)
 	if err != nil {
 		return nil, err
@@ -133,7 +132,9 @@ func newControllerWithDBSetupForNetwork(dbSetup libovsdbtest.TestSetup, netInfo 
 	client := util.GetOVNClientset().GetOVNKubeControllerClientset()
 	// factoryMock := factoryMocks.NodeWatchFactory{}
 	factoryMock, err := factory.NewOVNKubeControllerWatchFactory(client)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	if err != nil {
+		return nil, err
+	}
 	factoryMock.Start()
 	recorder := record.NewFakeRecorder(10)
 
@@ -144,8 +145,9 @@ func newControllerWithDBSetupForNetwork(dbSetup libovsdbtest.TestSetup, netInfo 
 	_, err = libovsdbutil.GetNBZone(nbClient)
 	if err != nil {
 		nbZoneFailed = true
-		err = createTestNBGlobal(nbClient, "global")
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		if err = createTestNBGlobal(nbClient, "global"); err != nil {
+			return nil, err
+		}
 	}
 
 	// factoryMock := factoryMocks.NodeWatchFactory{}
@@ -160,23 +162,29 @@ func newControllerWithDBSetupForNetwork(dbSetup libovsdbtest.TestSetup, netInfo 
 		recorder,
 		netInfo,
 	)
-	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	if err != nil {
+		return nil, err
+	}
 
 	if nbZoneFailed {
 		// Delete the NBGlobal row as this function created it.  Otherwise many tests would fail while
 		// checking the expectedData in the NBDB.
-		err = deleteTestNBGlobal(nbClient, "global")
-		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		if err = deleteTestNBGlobal(nbClient, "global"); err != nil {
+			return nil, err
+		}
 	}
 
-	controller.initTopLevelCache()
+	if err = controller.initTopLevelCache(); err != nil {
+		return nil, err
+	}
 	controller.useLBGroups = true
 	controller.useTemplates = true
 
-	// if addNAD {
-	// 	err = addSampleNAD(client)
-	// 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
-	// }
+	if addNAD {
+		if err = addSampleNAD(client); err != nil {
+			return nil, err
+		}
+	}
 	// TODO: add namespace for UDN
 	// TODO: service should be in that namespace
 
