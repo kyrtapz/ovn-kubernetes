@@ -191,8 +191,6 @@ type BaseNetworkController struct {
 type BaseSecondaryNetworkController struct {
 	BaseNetworkController
 
-	networkID *int
-
 	// multi-network policy events factory handler
 	policyHandler *factory.Handler
 	networkID     int

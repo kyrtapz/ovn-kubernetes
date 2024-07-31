@@ -11,13 +11,15 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	"k8s.io/klog/v2"
-	"k8s.io/utils/ptr"
 )
 
 // SecondaryNodeNetworkController structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints) for secondary network
 type SecondaryNodeNetworkController struct {
 	BaseNodeNetworkController
+
+	gatewayManager NodeSecondaryGatewayManager
+
 	// pod events factory handler
 	podHandler *factory.Handler
 
@@ -29,7 +31,7 @@ type SecondaryNodeNetworkController struct {
 
 // NewSecondaryNodeNetworkController creates a new OVN controller for creating logical network
 // infrastructure and policy for default l3 network
-func NewSecondaryNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, netInfo util.NetInfo) *SecondaryNodeNetworkController {
+func NewSecondaryNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, netInfo util.NetInfo, gwManager NodeSecondaryGatewayManager) *SecondaryNodeNetworkController {
 	return &SecondaryNodeNetworkController{
 		BaseNodeNetworkController: BaseNodeNetworkController{
 			CommonNodeNetworkControllerInfo: *cnnci,
@@ -37,6 +39,7 @@ func NewSecondaryNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, n
 			stopChan:                        make(chan struct{}),
 			wg:                              &sync.WaitGroup{},
 		},
+		gatewayManager: gwManager,
 	}
 }
 
@@ -57,16 +60,21 @@ func (nc *SecondaryNodeNetworkController) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		networkID, err := nc.getNetworkID()
-		if err != nil {
-			return err
-		}
-		nc.gateway = NewUserDefinedNetworkGateway(nc.NetInfo, networkID, node)
+
+		nc.gateway = NewUserDefinedNetworkGateway(nc.NetInfo, nc.networkID, node)
 		if err := nc.gateway.AddNetwork(); err != nil {
 			return fmt.Errorf("failed to add network to node gateway for network %s at node %s: %w",
 				nc.GetNetworkName(), nc.name, err)
 		}
 	}
+
+	// Generate a per network conntrack mark to be used for egress traffic.
+	masqCTMark := ctMarkUDNBase + uint(nc.networkID)
+
+	if err := nc.gatewayManager.AddNetwork(nc.NetInfo, masqCTMark); err != nil {
+		return fmt.Errorf("failed to add network to node gateway for network '%s': %w", nc.GetNetworkName(), err)
+	}
+
 	return nil
 }
 
@@ -78,6 +86,12 @@ func (nc *SecondaryNodeNetworkController) Stop() {
 
 	if nc.podHandler != nil {
 		nc.watchFactory.RemovePodHandler(nc.podHandler)
+	}
+
+	//TODO (dceara): does this need to go in Cleanup?
+	if err := nc.gatewayManager.DelNetwork(nc); err != nil {
+		// TODO (dceara): handle error
+		klog.Errorf("Failed to delete network from node gateway for network '%s'", nc.GetNetworkName())
 	}
 }
 

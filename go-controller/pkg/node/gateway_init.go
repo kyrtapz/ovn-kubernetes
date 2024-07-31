@@ -410,6 +410,7 @@ func (nc *DefaultNodeNetworkController) initGateway(subnets []*net.IPNet, nodeAn
 
 	waiter.AddWait(readyGwFunc, initGwFunc)
 	nc.gateway = gw
+	nc.secondaryNetworkGateway = gw
 
 	return nc.validateVTEPInterfaceMTU()
 }
@@ -497,6 +498,7 @@ func (nc *DefaultNodeNetworkController) initGatewayDPUHost(kubeNodeIP net.IP) er
 
 	err = gw.Init(nc.stopChan, nc.wg)
 	nc.gateway = gw
+	nc.secondaryNetworkGateway = gw
 	return err
 }
 
