@@ -314,7 +314,7 @@ func (c *Controller) initTopLevelCache() error {
 	}
 
 	// Then list all load balancers and their respective services.
-	services, lbs, err := getServiceLBs(c.nbClient, allTemplates, c.netInfo)
+	services, lbs, err := getServiceLBs(c.nbClient, allTemplates, c.netInfo) // TODO *****here it's wrong to use c.netInfo***8
 	if err != nil {
 		return fmt.Errorf("failed to load balancers: %w", err)
 	}
@@ -416,18 +416,18 @@ func (c *Controller) syncService(key string) error {
 
 	// Build the abstract LB configs for this service
 	perNodeConfigs, templateConfigs, clusterConfigs := buildServiceLBConfigs(service, endpointSlices, c.nodeInfos, c.useLBGroups, c.useTemplates, c.netInfo.GetNetworkName())
-	klog.V(5).Infof("Built service %s LB cluster-wide configs for network=%s: %#v", key, c.netInfo.GetNetworkName(), clusterConfigs)
-	klog.V(5).Infof("Built service %s LB per-node configs for network=%s:  %#v", key, c.netInfo.GetNetworkName(), perNodeConfigs)
-	klog.V(5).Infof("Built service %s LB template configs for network=%s: %#v", key, c.netInfo.GetNetworkName(), templateConfigs)
+	klog.Infof("Built service %s LB cluster-wide configs for network=%s: %#v", key, c.netInfo.GetNetworkName(), clusterConfigs)
+	klog.Infof("Built service %s LB per-node configs for network=%s:  %#v", key, c.netInfo.GetNetworkName(), perNodeConfigs)
+	klog.Infof("Built service %s LB template configs for network=%s: %#v", key, c.netInfo.GetNetworkName(), templateConfigs)
 
 	// Convert the LB configs in to load-balancer objects
 	clusterLBs := buildClusterLBs(service, clusterConfigs, c.nodeInfos, c.useLBGroups, c.netInfo)
 	templateLBs := buildTemplateLBs(service, templateConfigs, c.nodeInfos, c.nodeIPv4Templates, c.nodeIPv6Templates, c.netInfo)
 	perNodeLBs := buildPerNodeLBs(service, perNodeConfigs, c.nodeInfos, c.netInfo)
-	klog.V(5).Infof("Built service %s cluster-wide LB for network=%s: %#v", key, c.netInfo.GetNetworkName(), clusterLBs)
-	klog.V(5).Infof("Built service %s per-node LB for network=%s: %#v", key, c.netInfo.GetNetworkName(), perNodeLBs)
-	klog.V(5).Infof("Built service %s template LB for network=%s:  %#v", key, c.netInfo.GetNetworkName(), templateLBs)
-	klog.V(5).Infof("Service %s for network=%s has %d cluster-wide, %d per-node configs, %d template configs, making %d (cluster) %d (per node) and %d (template) load balancers",
+	klog.Infof("Built service %s cluster-wide LB for network=%s: %#v", key, c.netInfo.GetNetworkName(), clusterLBs)
+	klog.Infof("Built service %s per-node LB for network=%s: %#v", key, c.netInfo.GetNetworkName(), perNodeLBs)
+	klog.Infof("Built service %s template LB for network=%s:  %#v", key, c.netInfo.GetNetworkName(), templateLBs)
+	klog.Infof("Service %s for network=%s has %d cluster-wide, %d per-node configs, %d template configs, making %d (cluster) %d (per node) and %d (template) load balancers",
 		key, c.netInfo.GetNetworkName(), len(clusterConfigs), len(perNodeConfigs), len(templateConfigs),
 		len(clusterLBs), len(perNodeLBs), len(templateLBs))
 	lbs := append(clusterLBs, templateLBs...)
@@ -444,9 +444,9 @@ func (c *Controller) syncService(key string) error {
 	c.alreadyAppliedRWLock.RUnlock()
 
 	if alreadyAppliedKeyExists && LoadBalancersEqualNoUUID(existingLBs, lbs) {
-		klog.V(5).Infof("Skipping no-op change for service %s for network=%s", key, c.netInfo.GetNetworkName())
+		klog.Infof("Skipping no-op change for service %s for network=%s", key, c.netInfo.GetNetworkName())
 	} else {
-		klog.V(5).Infof("Services do not match for network=%s, existing lbs: %#v, built lbs: %#v", c.netInfo.GetNetworkName(), existingLBs, lbs)
+		klog.Infof("Services do not match for network=%s, existing lbs: %#v, built lbs: %#v", c.netInfo.GetNetworkName(), existingLBs, lbs)
 		// Actually apply load-balancers to OVN.
 		//
 		// Note: this may fail if a node was deleted between listing nodes and applying.
@@ -579,7 +579,7 @@ func (c *Controller) onServiceAdd(obj interface{}) {
 		return
 	}
 	metrics.GetConfigDurationRecorder().Start("service", service.Namespace, service.Name)
-	klog.V(5).Infof("Adding service %s for network=%s", c.netInfo.GetNetworkName(), key)
+	klog.Infof("Adding service %s for network=%s", c.netInfo.GetNetworkName(), key)
 	c.queue.Add(key)
 }
 

@@ -427,12 +427,15 @@ func DeleteLBs(nbClient libovsdbclient.Client, uuids []string) error {
 
 // getLBs returns a slice of load balancers found in OVN.
 func getLBs(nbClient libovsdbclient.Client, allTemplates TemplateMap, netInfo util.NetInfo) ([]*LB, error) {
+	klog.Infof("calling common from getLBs")
 	_, out, err := _getLBsCommon(nbClient, allTemplates, false, true, netInfo)
 	return out, err
 }
 
 // getServiceLBs returns a set of services as well as a slice of load balancers found in OVN.
 func getServiceLBs(nbClient libovsdbclient.Client, allTemplates TemplateMap, netInfo util.NetInfo) (sets.Set[string], []*LB, error) {
+	klog.Infof("calling common from getServiceLBs")
+
 	return _getLBsCommon(nbClient, allTemplates, true, false, netInfo)
 }
 
@@ -552,7 +555,10 @@ func _getLBsCommon(nbClient libovsdbclient.Client, allTemplates TemplateMap, wit
 
 	// LB Groups
 	pg := func(item *nbdb.LoadBalancerGroup) bool {
+		klog.Infof("[_getLBsCommon, network=%s, includeAllNetworks=%t] LBgroup=%s START", netInfo.GetNetworkName(), includeAllNetworks, item.Name)
 		if len(item.LoadBalancer) == 0 {
+			klog.Infof("[_getLBsCommon, network=%s, includeAllNetworks=%t] LBgroup=%s ;  No LBs, return false",
+				netInfo.GetNetworkName(), includeAllNetworks, item.Name)
 			return false
 		}
 

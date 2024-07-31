@@ -133,6 +133,7 @@ var protos = []v1.Protocol{
 //     affinity timeout set.
 func buildServiceLBConfigs(service *v1.Service, endpointSlices []*discovery.EndpointSlice, nodeInfos []nodeInfo,
 	useLBGroup, useTemplates bool, networkName string) (perNodeConfigs, templateConfigs, clusterConfigs []lbConfig) {
+	klog.Infof("[RICCARDO] buildServiceLBConfigs network=%s: useTemplate=%t, useLBGroup=%t", networkName, useTemplates, useLBGroup)
 
 	needsAffinityTimeout := hasSessionAffinityTimeOut(service)
 
@@ -170,8 +171,12 @@ func buildServiceLBConfigs(service *v1.Service, endpointSlices []*discovery.Endp
 			// Only "plain" NodePort services (no ETP, no affinity timeout)
 			// can use load balancer templates.
 			if !useLBGroup || !useTemplates || externalTrafficLocal || needsAffinityTimeout {
+				klog.Infof("[RICCARDO] buildServiceLBConfigs network=%s:  !useLBGroup || !useTemplates || externalTrafficLocal || needsAffinityTimeout", networkName)
+
 				perNodeConfigs = append(perNodeConfigs, nodePortLBConfig)
 			} else {
+				klog.Infof("[RICCARDO] buildServiceLBConfigs network=%s: templateConfigs", networkName)
+
 				templateConfigs = append(templateConfigs, nodePortLBConfig)
 			}
 		}
@@ -249,12 +254,17 @@ func buildClusterLBs(service *v1.Service, configs []lbConfig, nodeInfos []nodeIn
 		nodeSwitches = make([]string, 0)
 		nodeRouters = make([]string, 0)
 		groups = []string{netInfo.GetNetworkScopedLoadBalancerGroupName(types.ClusterLBGroupName)}
+		klog.Infof("RICCARDO network=%s useLBGroup=true, groups=%s", netInfo.GetNetworkName(), groups)
+
 	} else {
+		klog.Infof("RICCARDO network=%s useLBGroup=false", netInfo.GetNetworkName())
+
 		nodeSwitches = make([]string, 0, len(nodeInfos))
 		nodeRouters = make([]string, 0, len(nodeInfos))
 		groups = make([]string, 0)
 
 		for _, node := range nodeInfos {
+			klog.Infof("RICCARDO network=%s node=%+v", netInfo.GetNetworkName(), node)
 			nodeSwitches = append(nodeSwitches, node.switchName) // TODO Make sure switchName supports multi networks
 			// For shared gateway, add to the node's GWR as well.
 			// The node may not have a gateway router - it might be waiting initialization, or
@@ -352,10 +362,16 @@ func buildTemplateLBs(service *v1.Service, configs []lbConfig, nodes []nodeInfo,
 	eids := util.ExternalIDsForLoadBalancer(service, netInfo.GetNetworkName(), netInfo.IsDefault())
 	out := make([]LB, 0, len(configs))
 
+	klog.Infof("RICCARDO [buildTemplateLBs]  network=%s, protos=%+v, cbp=%v, configs=%v", netInfo.GetNetworkName(), protos, cbp, configs)
+
 	for _, proto := range protos {
+		klog.Infof("RICCARDO [buildTemplateLBs]  network=%s, proto=%+v", netInfo.GetNetworkName(), proto)
+
 		configs, ok := cbp[proto]
 		if !ok {
+			klog.Infof("RICCARDO [buildTemplateLBs]  network=%s, proto=%+v CONTINUE", netInfo.GetNetworkName(), proto)
 			continue
+
 		}
 
 		switchV4Rules := make([]LBRule, 0, len(configs))
@@ -502,6 +518,8 @@ func buildTemplateLBs(service *v1.Service, configs []lbConfig, nodes []nodeInfo,
 				}
 			}
 		}
+
+		klog.Infof("RICCARDO [buildTemplateLBs] network=%s, len(switchV4Rules)=%d ", netInfo.GetNetworkName(), len(switchV4Rules))
 
 		if nodeIPv4Templates.Len() > 0 {
 			if len(switchV4Rules) > 0 {
