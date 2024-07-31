@@ -7,58 +7,134 @@ import (
 	"strings"
 	"testing"
 
+	cnitypes "github.com/containernetworking/cni/pkg/types"
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
 	"github.com/onsi/gomega/format"
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
+	ovncnitypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	globalconfig "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	libovsdbutil "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/util"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	kube_test "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
-	v1nadmocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/listers/k8s.cni.cncf.io/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+	"github.com/urfave/cli/v2"
+	"golang.org/x/exp/maps"
 
 	v1 "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	utilpointer "k8s.io/utils/pointer"
 )
 
-var alwaysReady = func() bool { return true }
-var FakeGRs = "GR_1 GR_2"
-var initialLsGroups []string = []string{types.ClusterLBGroupName, types.ClusterSwitchLBGroupName}
-var initialLrGroups []string = []string{types.ClusterLBGroupName, types.ClusterRouterLBGroupName}
+var (
+	alwaysReady              = func() bool { return true }
+	FakeGRs                  = "GR_1 GR_2"
+	initialLsGroups []string = []string{types.ClusterLBGroupName, types.ClusterSwitchLBGroupName}
+	initialLrGroups []string = []string{types.ClusterLBGroupName, types.ClusterRouterLBGroupName}
 
-var outport int32 = int32(3456)
-var tcp v1.Protocol = v1.ProtocolTCP
+	outport int32       = int32(3456)
+	tcp     v1.Protocol = v1.ProtocolTCP
+
+	UDNNamespace       = "ns-udn"
+	UDNNetworkName     = "tenant-red"
+	UDNNetInfo         = getSampleUDNNetInfo(UDNNamespace)
+	initialLsGroupsUDN = []string{
+		UDNNetInfo.GetNetworkScopedLoadBalancerGroupName(types.ClusterLBGroupName),
+		UDNNetInfo.GetNetworkScopedLoadBalancerGroupName(types.ClusterSwitchLBGroupName)}
+	initialLrGroupsUDN = []string{
+		UDNNetInfo.GetNetworkScopedLoadBalancerGroupName(types.ClusterLBGroupName),
+		UDNNetInfo.GetNetworkScopedLoadBalancerGroupName(types.ClusterRouterLBGroupName)}
+)
 
 type serviceController struct {
 	*Controller
 	serviceStore       cache.Store
 	endpointSliceStore cache.Store
+	NADStore           cache.Store
 	libovsdbCleanup    *libovsdbtest.Context
 }
 
-func newController() (*serviceController, error) {
-	return newControllerWithDBSetup(libovsdbtest.TestSetup{})
+func newControllerWithDBSetup(dbSetup libovsdbtest.TestSetup) (*serviceController, error) {
+	return newControllerWithDBSetupForNetwork(dbSetup, &util.DefaultNetInfo{}, false)
 }
 
-func newControllerWithDBSetup(dbSetup libovsdbtest.TestSetup) (*serviceController, error) {
+// func new() {
+// 	var (
+// 		app        *cli.App
+// 		controller *Controller
+// 		fakeClient *util.OVNClusterManagerClientset
+// 	)
+
+// 	start := func(objects ...runtime.Object) {
+// 		config.OVNKubernetesFeature.EnableEgressFirewall = true
+// 		config.OVNKubernetesFeature.EnableDNSNameResolver = true
+
+// 		fakeClient = util.GetOVNClientset().GetOVNKubeControllerClientset()
+// 		wf, err := factory.NewOVNKubeControllerWatchFactory(fakeClient)
+// 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+// 		controller, err = NewController(fakeClient, wf)
+// 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+// 		err = wf.Start()
+// 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+// 		err = controller.Start(context.Background(), 1)
+// 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+// 	}
+
+// 	ginkgo.BeforeEach(func() {
+// 		config.PrepareTestConfig()
+// 		config.OVNKubernetesFeature.EnableInterconnect = true
+// 		config.OVNKubernetesFeature.EnableMultiNetwork = true
+// 		config.OVNKubernetesFeature.EnableNetworkSegmentation = true
+// 		app = cli.NewApp()
+// 		app.Name = "test"
+// 		app.Flags = config.Flags
+// 	})
+
+// 	ginkgo.AfterEach(func() {
+// 		if controller != nil {
+// 			controller.Stop()
+// 		}
+// 	})
+
+// }
+
+func newControllerWithDBSetupForNetwork(dbSetup libovsdbtest.TestSetup, netInfo util.NetInfo, addNAD bool) (*serviceController, error) {
 	gomega.RegisterFailHandler(ginkgo.Fail)
 	nbClient, cleanup, err := libovsdbtest.NewNBTestHarness(dbSetup, nil)
 	if err != nil {
 		return nil, err
 	}
-	client := fake.NewSimpleClientset()
-	informerFactory := informers.NewSharedInformerFactory(client, 0)
+	// TODO client => informer factory => ovnk controller
 
+	// client := fake.NewSimpleClientset() // TODO this cannot possibly support NADs, even if you have an mock informer that supports NADs
+	// informerFactory := informers.NewSharedInformerFactory(client, 0)
+
+	config.PrepareTestConfig()
+	config.OVNKubernetesFeature.EnableInterconnect = true
+	config.OVNKubernetesFeature.EnableMultiNetwork = true
+	config.OVNKubernetesFeature.EnableNetworkSegmentation = true
+	config.OVNKubernetesFeature.EnableEgressFirewall = true
+	config.OVNKubernetesFeature.EnableDNSNameResolver = true
+
+	app := cli.NewApp()
+	app.Name = "test"
+	app.Flags = config.Flags
+
+	client := util.GetOVNClientset().GetOVNKubeControllerClientset()
+	// factoryMock := factoryMocks.NodeWatchFactory{}
+	factoryMock, err := factory.NewOVNKubeControllerWatchFactory(client)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	factoryMock.Start()
 	recorder := record.NewFakeRecorder(10)
 
 	nbZoneFailed := false
@@ -72,14 +148,17 @@ func newControllerWithDBSetup(dbSetup libovsdbtest.TestSetup) (*serviceControlle
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	}
 
-	controller, err := NewController(client,
+	// factoryMock := factoryMocks.NodeWatchFactory{}
+
+	controller, err := NewController(client.KubeClient,
 		nbClient,
-		informerFactory.Core().V1().Services(),
-		informerFactory.Discovery().V1().EndpointSlices(),
-		informerFactory.Core().V1().Nodes(),
-		&v1nadmocks.NetworkAttachmentDefinitionLister{},
+		factoryMock.ServiceCoreInformer(), //,factoryMock.Core().V1().Services(),
+		factoryMock.EndpointSliceCoreInformer(),
+		factoryMock.NodeCoreInformer(),
+		// &v1nadmocks.NetworkAttachmentDefinitionLister{},
+		factoryMock.NADInformer().Lister(), // ***** PANICS HERE ****
 		recorder,
-		&util.DefaultNetInfo{},
+		netInfo,
 	)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
@@ -94,16 +173,46 @@ func newControllerWithDBSetup(dbSetup libovsdbtest.TestSetup) (*serviceControlle
 	controller.useLBGroups = true
 	controller.useTemplates = true
 
+	// if addNAD {
+	// 	err = addSampleNAD(client)
+	// 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	// }
+	// TODO: add namespace for UDN
+	// TODO: service should be in that namespace
+
 	return &serviceController{
 		controller,
-		informerFactory.Core().V1().Services().Informer().GetStore(),
-		informerFactory.Discovery().V1().EndpointSlices().Informer().GetStore(),
+		factoryMock.ServiceCoreInformer().Informer().GetStore(), //,factoryMock.Core().V1().Services(),
+		factoryMock.EndpointSliceInformer().GetStore(),
+		factoryMock.NADInformer().Informer().GetStore(),
 		cleanup,
 	}, nil
 }
 
 func (c *serviceController) close() {
 	c.libovsdbCleanup.Cleanup()
+}
+
+func getSampleUDNNetInfo(namespace string) util.NetInfo {
+	netInfo, _ := util.NewNetInfo(&ovncnitypes.NetConf{
+		// TODO What's the namespace here?
+		Topology:   "layer3",
+		NADName:    fmt.Sprintf("%s/nad1", namespace),
+		MTU:        1400,
+		Role:       "primary",
+		Subnets:    "192.168.200.0/16",
+		NetConf:    cnitypes.NetConf{Name: "tenant-red", Type: "ovn-k8s-cni-overlay"},
+		JoinSubnet: "100.66.0.0/16",
+	})
+	return netInfo
+}
+
+func addSampleNAD(client *util.OVNKubeControllerClientset) error {
+	_, err := client.NetworkAttchDefClient.K8sCniCncfIoV1().NetworkAttachmentDefinitions(namespace).Create(
+		context.TODO(),
+		kube_test.GenerateNAD(UDNNetworkName, UDNNetworkName, UDNNamespace, types.Layer3Topology, "10.128.2.0/16/24", types.NetworkRolePrimary),
+		metav1.CreateOptions{})
+	return err
 }
 
 // TestSyncServices - an end-to-end test for the services controller.
@@ -155,6 +264,8 @@ func TestSyncServices(t *testing.T) {
 		service              *v1.Service
 		initialDb            []libovsdbtest.TestData
 		expectedDb           []libovsdbtest.TestData
+		initialDbUDN         []libovsdbtest.TestData
+		expectedDbUDN        []libovsdbtest.TestData
 		gatewayMode          string
 		nodeToDelete         *nodeInfo
 		dbStateAfterDeleting []libovsdbtest.TestData
@@ -204,7 +315,7 @@ func TestSyncServices(t *testing.T) {
 					Vips: map[string]string{
 						"192.168.1.1:80": "",
 					},
-					ExternalIDs: serviceExternalIDs(namespacedServiceName(ns, serviceName)),
+					ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(ns, serviceName)),
 				},
 				nodeLogicalSwitch(nodeA, initialLsGroups),
 				nodeLogicalSwitch(nodeB, initialLsGroups),
@@ -213,6 +324,55 @@ func TestSyncServices(t *testing.T) {
 				lbGroup(types.ClusterLBGroupName, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
 				lbGroup(types.ClusterSwitchLBGroupName),
 				lbGroup(types.ClusterRouterLBGroupName),
+				nodeIPTemplate(firstNode),
+				nodeIPTemplate(secondNode),
+			},
+			initialDbUDN: []libovsdbtest.TestData{
+				nodeLogicalSwitch(nodeA, initialLsGroups),
+				nodeLogicalSwitch(nodeB, initialLsGroups),
+				nodeLogicalSwitchForNetwork(nodeA, initialLsGroupsUDN, UDNNetInfo),
+				nodeLogicalSwitchForNetwork(nodeB, initialLsGroupsUDN, UDNNetInfo),
+
+				nodeLogicalRouter(nodeA, initialLrGroups),
+				nodeLogicalRouter(nodeB, initialLrGroups),
+				nodeLogicalRouterForNetwork(nodeA, initialLrGroupsUDN, UDNNetInfo),
+				nodeLogicalRouterForNetwork(nodeB, initialLrGroupsUDN, UDNNetInfo),
+
+				lbGroup(types.ClusterLBGroupName),
+				lbGroup(types.ClusterSwitchLBGroupName),
+				lbGroup(types.ClusterRouterLBGroupName),
+				lbGroupForNetwork(types.ClusterLBGroupName, UDNNetInfo),
+				lbGroupForNetwork(types.ClusterSwitchLBGroupName, UDNNetInfo),
+				lbGroupForNetwork(types.ClusterRouterLBGroupName, UDNNetInfo),
+			},
+			expectedDbUDN: []libovsdbtest.TestData{
+				&nbdb.LoadBalancer{
+					UUID:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Name:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Options:  servicesOptions(),
+					Protocol: &nbdb.LoadBalancerProtocolTCP,
+					Vips: map[string]string{
+						"192.168.1.1:80": "",
+					},
+					ExternalIDs: loadBalancerExternalIDsForNetwork(namespacedServiceName(ns, serviceName), UDNNetInfo.GetNetworkName()),
+				},
+				nodeLogicalSwitch(nodeA, initialLsGroups),
+				nodeLogicalSwitch(nodeB, initialLsGroups),
+				nodeLogicalSwitchForNetwork(nodeA, initialLsGroupsUDN, UDNNetInfo),
+				nodeLogicalSwitchForNetwork(nodeB, initialLsGroupsUDN, UDNNetInfo),
+
+				nodeLogicalRouter(nodeA, initialLrGroups),
+				nodeLogicalRouter(nodeB, initialLrGroups),
+				nodeLogicalRouterForNetwork(nodeA, initialLrGroupsUDN, UDNNetInfo),
+				nodeLogicalRouterForNetwork(nodeB, initialLrGroupsUDN, UDNNetInfo),
+
+				lbGroup(types.ClusterLBGroupName),
+				lbGroup(types.ClusterSwitchLBGroupName),
+				lbGroup(types.ClusterRouterLBGroupName),
+				lbGroupForNetwork(types.ClusterLBGroupName, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+				lbGroupForNetwork(types.ClusterSwitchLBGroupName, UDNNetInfo),
+				lbGroupForNetwork(types.ClusterRouterLBGroupName, UDNNetInfo),
+
 				nodeIPTemplate(firstNode),
 				nodeIPTemplate(secondNode),
 			},
@@ -252,7 +412,7 @@ func TestSyncServices(t *testing.T) {
 					Vips: map[string]string{
 						"192.168.0.1:6443": "",
 					},
-					ExternalIDs: serviceExternalIDs(namespacedServiceName(ns, serviceName)),
+					ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(ns, serviceName)),
 				},
 				nodeLogicalSwitch(nodeA, initialLsGroups),
 				nodeLogicalSwitch(nodeB, initialLsGroups),
@@ -264,6 +424,37 @@ func TestSyncServices(t *testing.T) {
 				lbGroup(types.ClusterSwitchLBGroupName),
 				lbGroup(types.ClusterRouterLBGroupName),
 			},
+			initialDbUDN: []libovsdbtest.TestData{
+				&nbdb.LoadBalancer{
+					UUID:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Name:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Options:  servicesOptions(),
+					Protocol: &nbdb.LoadBalancerProtocolTCP,
+					Vips: map[string]string{
+						"192.168.0.1:6443": "",
+					},
+					ExternalIDs: loadBalancerExternalIDsForNetwork(namespacedServiceName(ns, serviceName), UDNNetworkName),
+				},
+				nodeLogicalSwitch(nodeA, initialLsGroups),
+				nodeLogicalSwitch(nodeB, initialLsGroups),
+				nodeLogicalSwitchForNetwork(nodeA, initialLsGroupsUDN, UDNNetInfo),
+				nodeLogicalSwitchForNetwork(nodeB, initialLsGroupsUDN, UDNNetInfo),
+				nodeLogicalSwitchForNetwork("wrong-switch", []string{}, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+
+				nodeLogicalRouter(nodeA, initialLrGroups),
+				nodeLogicalRouter(nodeB, initialLrGroups),
+				// nodeLogicalRouter("node-c", []string{}, loadBalancerClusterWideTCPServiceName(ns, serviceName)), // TODO might not be cleaned up, thbough!
+				nodeLogicalRouterForNetwork(nodeA, initialLrGroupsUDN, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+				nodeLogicalRouterForNetwork(nodeB, initialLrGroupsUDN, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+				nodeLogicalRouterForNetwork("node-c", []string{}, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+
+				lbGroup(types.ClusterLBGroupName),
+				lbGroup(types.ClusterSwitchLBGroupName),
+				lbGroup(types.ClusterRouterLBGroupName),
+				lbGroupForNetwork(types.ClusterLBGroupName, UDNNetInfo),
+				lbGroupForNetwork(types.ClusterSwitchLBGroupName, UDNNetInfo),
+				lbGroupForNetwork(types.ClusterRouterLBGroupName, UDNNetInfo),
+			},
 			expectedDb: []libovsdbtest.TestData{
 				&nbdb.LoadBalancer{
 					UUID:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
@@ -273,7 +464,7 @@ func TestSyncServices(t *testing.T) {
 					Vips: map[string]string{
 						"192.168.1.1:80": "",
 					},
-					ExternalIDs: serviceExternalIDs(namespacedServiceName(ns, serviceName)),
+					ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(ns, serviceName)),
 				},
 				nodeLogicalSwitch(nodeA, initialLsGroups),
 				nodeLogicalSwitch(nodeB, initialLsGroups),
@@ -284,6 +475,41 @@ func TestSyncServices(t *testing.T) {
 				lbGroup(types.ClusterLBGroupName, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
 				lbGroup(types.ClusterSwitchLBGroupName),
 				lbGroup(types.ClusterRouterLBGroupName),
+				nodeIPTemplate(firstNode),
+				nodeIPTemplate(secondNode),
+			},
+			expectedDbUDN: []libovsdbtest.TestData{
+				&nbdb.LoadBalancer{
+					UUID:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Name:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Options:  servicesOptions(),
+					Protocol: &nbdb.LoadBalancerProtocolTCP,
+					Vips: map[string]string{
+						"192.168.1.1:80": "",
+					},
+					ExternalIDs: loadBalancerExternalIDsForNetwork(namespacedServiceName(ns, serviceName), UDNNetworkName),
+				},
+				nodeLogicalSwitch(nodeA, initialLsGroups),
+				nodeLogicalSwitch(nodeB, initialLsGroups),
+				// nodeLogicalSwitch("wrong-switch", []string{}),
+				nodeLogicalSwitchForNetwork(nodeA, initialLsGroupsUDN, UDNNetInfo),
+				nodeLogicalSwitchForNetwork(nodeB, initialLsGroupsUDN, UDNNetInfo),
+				nodeLogicalSwitchForNetwork("wrong-switch", []string{}, UDNNetInfo),
+
+				nodeLogicalRouter(nodeA, initialLrGroups),
+				nodeLogicalRouter(nodeB, initialLrGroups),
+				// nodeLogicalRouter("node-c", []string{}),
+				nodeLogicalRouterForNetwork(nodeA, initialLrGroupsUDN, UDNNetInfo),
+				nodeLogicalRouterForNetwork(nodeB, initialLrGroupsUDN, UDNNetInfo),
+				nodeLogicalRouterForNetwork("node-c", []string{}, UDNNetInfo),
+
+				lbGroup(types.ClusterLBGroupName),
+				lbGroup(types.ClusterSwitchLBGroupName),
+				lbGroup(types.ClusterRouterLBGroupName),
+				lbGroupForNetwork(types.ClusterLBGroupName, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+				lbGroupForNetwork(types.ClusterSwitchLBGroupName, UDNNetInfo),
+				lbGroupForNetwork(types.ClusterRouterLBGroupName, UDNNetInfo),
+
 				nodeIPTemplate(firstNode),
 				nodeIPTemplate(secondNode),
 			},
@@ -337,7 +563,7 @@ func TestSyncServices(t *testing.T) {
 					Vips: map[string]string{
 						"192.168.0.1:6443": "",
 					},
-					ExternalIDs: serviceExternalIDs(namespacedServiceName(ns, serviceName)),
+					ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(ns, serviceName)),
 				},
 				nodeLogicalSwitch(nodeA, initialLsGroups, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
 				nodeLogicalSwitch(nodeB, initialLsGroups, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
@@ -346,6 +572,34 @@ func TestSyncServices(t *testing.T) {
 				lbGroup(types.ClusterLBGroupName),
 				lbGroup(types.ClusterSwitchLBGroupName),
 				lbGroup(types.ClusterRouterLBGroupName),
+			},
+			initialDbUDN: []libovsdbtest.TestData{
+				&nbdb.LoadBalancer{
+					UUID:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Name:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Options:  servicesOptions(),
+					Protocol: &nbdb.LoadBalancerProtocolTCP,
+					Vips: map[string]string{
+						"192.168.0.1:6443": "",
+					},
+					ExternalIDs: loadBalancerExternalIDsForNetwork(namespacedServiceName(ns, serviceName), UDNNetworkName),
+				},
+				nodeLogicalSwitch(nodeA, initialLsGroups),
+				nodeLogicalSwitch(nodeB, initialLsGroups),
+				nodeLogicalSwitchForNetwork(nodeA, initialLsGroupsUDN, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+				nodeLogicalSwitchForNetwork(nodeB, initialLsGroupsUDN, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+
+				nodeLogicalRouter(nodeA, initialLrGroups),
+				nodeLogicalRouter(nodeB, initialLrGroups),
+				nodeLogicalRouterForNetwork(nodeA, initialLrGroups, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+				nodeLogicalRouterForNetwork(nodeB, initialLrGroups, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+
+				lbGroup(types.ClusterLBGroupName),
+				lbGroup(types.ClusterSwitchLBGroupName),
+				lbGroup(types.ClusterRouterLBGroupName),
+				lbGroupForNetwork(types.ClusterLBGroupName, UDNNetInfo),
+				lbGroupForNetwork(types.ClusterSwitchLBGroupName, UDNNetInfo),
+				lbGroupForNetwork(types.ClusterRouterLBGroupName, UDNNetInfo),
 			},
 			expectedDb: []libovsdbtest.TestData{
 				&nbdb.LoadBalancer{
@@ -356,7 +610,7 @@ func TestSyncServices(t *testing.T) {
 					Vips: map[string]string{
 						"192.168.1.1:80": "10.128.0.2:3456,10.128.1.2:3456",
 					},
-					ExternalIDs: serviceExternalIDs(namespacedServiceName(ns, serviceName)),
+					ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(ns, serviceName)),
 				},
 				nodeMergedTemplateLoadBalancer(nodePort, serviceName, ns, outport, nodeAEndpointIP, nodeBEndpointIP),
 				nodeLogicalSwitch(nodeA, initialLsGroups),
@@ -366,6 +620,39 @@ func TestSyncServices(t *testing.T) {
 				lbGroup(types.ClusterLBGroupName, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
 				lbGroup(types.ClusterSwitchLBGroupName, nodeMergedTemplateLoadBalancerName(ns, serviceName, v1.IPv4Protocol)),
 				lbGroup(types.ClusterRouterLBGroupName, nodeMergedTemplateLoadBalancerName(ns, serviceName, v1.IPv4Protocol)),
+				nodeIPTemplate(firstNode),
+				nodeIPTemplate(secondNode),
+			},
+			expectedDbUDN: []libovsdbtest.TestData{
+				&nbdb.LoadBalancer{
+					UUID:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Name:     loadBalancerClusterWideTCPServiceName(ns, serviceName),
+					Options:  servicesOptions(),
+					Protocol: &nbdb.LoadBalancerProtocolTCP,
+					Vips: map[string]string{
+						"192.168.1.1:80": "10.128.0.2:3456,10.128.1.2:3456",
+					},
+					ExternalIDs: loadBalancerExternalIDsForNetwork(namespacedServiceName(ns, serviceName), UDNNetworkName),
+				},
+				nodeMergedTemplateLoadBalancerForNetwork(nodePort, serviceName, ns, outport, UDNNetworkName, nodeAEndpointIP, nodeBEndpointIP),
+
+				nodeLogicalSwitch(nodeA, initialLsGroups),
+				nodeLogicalSwitch(nodeB, initialLsGroups),
+				nodeLogicalSwitchForNetwork(nodeA, initialLsGroupsUDN, UDNNetInfo),
+				nodeLogicalSwitchForNetwork(nodeB, initialLsGroupsUDN, UDNNetInfo),
+
+				nodeLogicalRouter(nodeA, initialLrGroups),
+				nodeLogicalRouter(nodeB, initialLrGroups),
+				nodeLogicalRouterForNetwork(nodeA, initialLrGroups, UDNNetInfo),
+				nodeLogicalRouterForNetwork(nodeB, initialLrGroups, UDNNetInfo),
+
+				lbGroup(types.ClusterLBGroupName),
+				lbGroup(types.ClusterSwitchLBGroupName),
+				lbGroup(types.ClusterRouterLBGroupName),
+				lbGroupForNetwork(types.ClusterLBGroupName, UDNNetInfo, loadBalancerClusterWideTCPServiceName(ns, serviceName)),
+				lbGroupForNetwork(types.ClusterSwitchLBGroupName, UDNNetInfo, nodeMergedTemplateLoadBalancerName(ns, serviceName, v1.IPv4Protocol)),
+				lbGroupForNetwork(types.ClusterRouterLBGroupName, UDNNetInfo, nodeMergedTemplateLoadBalancerName(ns, serviceName, v1.IPv4Protocol)),
+
 				nodeIPTemplate(firstNode),
 				nodeIPTemplate(secondNode),
 			},
@@ -419,7 +706,7 @@ func TestSyncServices(t *testing.T) {
 					Vips: map[string]string{
 						"192.168.0.1:6443": "",
 					},
-					ExternalIDs: serviceExternalIDs(namespacedServiceName(ns, serviceName)),
+					ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(ns, serviceName)),
 				},
 				nodeLogicalSwitch(nodeA, initialLsGroups),
 				nodeLogicalSwitch(nodeB, initialLsGroups),
@@ -439,7 +726,7 @@ func TestSyncServices(t *testing.T) {
 					Vips: map[string]string{
 						"192.168.1.1:80": "10.128.0.2:3456,10.128.1.2:3456",
 					},
-					ExternalIDs: serviceExternalIDs(namespacedServiceName(ns, serviceName)),
+					ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(ns, serviceName)),
 				},
 				nodeMergedTemplateLoadBalancer(nodePort, serviceName, ns, outport, nodeAEndpointIP, nodeBEndpointIP),
 				nodeLogicalSwitch(nodeA, initialLsGroups),
@@ -462,7 +749,7 @@ func TestSyncServices(t *testing.T) {
 					Vips: map[string]string{
 						"192.168.1.1:80": "10.128.0.2:3456,10.128.1.2:3456",
 					},
-					ExternalIDs: serviceExternalIDs(namespacedServiceName(ns, serviceName)),
+					ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(ns, serviceName)),
 				},
 				nodeMergedTemplateLoadBalancer(nodePort, serviceName, ns, outport, nodeAEndpointIP, nodeBEndpointIP),
 				nodeLogicalSwitch(nodeA, initialLsGroups),
@@ -478,41 +765,106 @@ func TestSyncServices(t *testing.T) {
 		},
 	}
 
-	for i, tt := range tests {
-		t.Run(fmt.Sprintf("%d_%s", i, tt.name), func(t *testing.T) {
-			g := gomega.NewGomegaWithT(t)
-
-			if tt.gatewayMode != "" {
-				globalconfig.Gateway.Mode = globalconfig.GatewayMode(tt.gatewayMode)
-			} else {
-				globalconfig.Gateway.Mode = globalconfig.GatewayModeShared
+	for i, tt := range tests[:3] {
+		for _, testUDN := range []bool{false, true} {
+			udnString := ""
+			if testUDN {
+				udnString = "_UDN"
 			}
+			t.Run(fmt.Sprintf("%d_%s%s", i, tt.name, udnString), func(t *testing.T) {
 
-			controller, err := newControllerWithDBSetup(libovsdbtest.TestSetup{NBData: tt.initialDb})
-			if err != nil {
-				t.Fatalf("Error creating controller: %v", err)
-			}
-			defer controller.close()
-			// Add objects to the Store
-			controller.endpointSliceStore.Add(tt.slice)
-			controller.serviceStore.Add(tt.service)
+				g := gomega.NewGomegaWithT(t)
+				var netInfo util.NetInfo
+				netInfo = &util.DefaultNetInfo{}
+				initialDb := tt.initialDb
+				expectedDb := tt.expectedDb
+				if testUDN {
+					netInfo = UDNNetInfo
+					initialDb = tt.initialDbUDN
+					expectedDb = tt.expectedDbUDN
+				}
 
-			controller.nodeTracker.nodes = defaultNodes
-			controller.RequestFullSync(controller.nodeTracker.getZoneNodes())
+				if tt.gatewayMode != "" {
+					globalconfig.Gateway.Mode = globalconfig.GatewayMode(tt.gatewayMode)
+				} else {
+					globalconfig.Gateway.Mode = globalconfig.GatewayModeShared
+				}
+				var controller *serviceController
+				var err error
 
-			err = controller.syncService(ns + "/" + serviceName)
-			if err != nil {
-				t.Fatalf("syncServices error: %v", err)
-			}
+				controller, err = newControllerWithDBSetupForNetwork(libovsdbtest.TestSetup{NBData: initialDb}, netInfo, testUDN)
 
-			g.Expect(controller.nbClient).To(libovsdbtest.HaveData(tt.expectedDb))
+				if err != nil {
+					t.Fatalf("Error creating controller: %v", err)
+				}
+				defer controller.close()
 
-			if tt.nodeToDelete != nil {
-				controller.nodeTracker.removeNode(tt.nodeToDelete.name)
-				g.Expect(controller.syncService(namespacedServiceName(ns, serviceName))).To(gomega.Succeed())
-				g.Expect(controller.nbClient).To(libovsdbtest.HaveData(tt.dbStateAfterDeleting))
-			}
-		})
+				// Add objects to the Store
+				controller.endpointSliceStore.Add(tt.slice)
+				controller.serviceStore.Add(tt.service)
+				controller.nodeTracker.nodes = defaultNodes
+				if testUDN {
+					// Add mirrored slices
+					controller.endpointSliceStore.Add(kube_test.MirrorEndpointSlice(tt.slice, UDNNetInfo.GetNetworkName()))
+				}
+				controller.RequestFullSync(controller.nodeTracker.getZoneNodes())
+
+				err = controller.syncService(ns + "/" + serviceName)
+
+				if err != nil {
+					t.Fatalf("syncServices error: %v", err)
+				}
+
+				g.Expect(controller.nbClient).To(libovsdbtest.HaveData(expectedDb))
+
+				if tt.nodeToDelete != nil {
+					controller.nodeTracker.removeNode(tt.nodeToDelete.name)
+					g.Expect(controller.syncService(namespacedServiceName(ns, serviceName))).To(gomega.Succeed())
+					g.Expect(controller.nbClient).To(libovsdbtest.HaveData(tt.dbStateAfterDeleting))
+				}
+			})
+			// // Run on UDN
+			// t.Run(fmt.Sprintf("%d_%s_UDN", i, tt.name), func(t *testing.T) {
+			// 	// tt.expectedDbUDN != nil
+
+			// 	g := gomega.NewGomegaWithT(t)
+
+			// 	if tt.gatewayMode != "" {
+			// 		globalconfig.Gateway.Mode = globalconfig.GatewayMode(tt.gatewayMode)
+			// 	} else {
+			// 		globalconfig.Gateway.Mode = globalconfig.GatewayModeShared
+			// 	}
+
+			// 	controller, err := newControllerWithDBSetupForNetwork(libovsdbtest.TestSetup{NBData: tt.initialDbUDN}, UDNNetInfo, true)
+			// 	if err != nil {
+			// 		t.Fatalf("Error creating controller: %v", err)
+			// 	}
+			// 	defer controller.close()
+			// 	// Add objects to the Store
+			// 	controller.endpointSliceStore.Add(tt.slice)
+			// 	// Add mirrored slices
+			// 	controller.endpointSliceStore.Add(kube_test.MirrorEndpointSlice(tt.slice, UDNNetInfo.GetNetworkName()))
+
+			// 	controller.serviceStore.Add(tt.service)
+
+			// 	controller.nodeTracker.nodes = defaultNodes
+			// 	controller.RequestFullSync(controller.nodeTracker.getZoneNodes())
+
+			// 	err = controller.syncService(ns + "/" + serviceName)
+			// 	if err != nil {
+			// 		t.Fatalf("syncServices error: %v", err)
+			// 	}
+
+			// 	g.Expect(controller.nbClient).To(libovsdbtest.HaveData(tt.expectedDbUDN))
+
+			// 	if tt.nodeToDelete != nil {
+			// 		controller.nodeTracker.removeNode(tt.nodeToDelete.name)
+			// 		g.Expect(controller.syncService(namespacedServiceName(ns, serviceName))).To(gomega.Succeed())
+			// 		g.Expect(controller.nbClient).To(libovsdbtest.HaveData(tt.dbStateAfterDeleting))
+			// 	}
+			// })
+		}
+
 	}
 }
 
@@ -608,7 +960,7 @@ func Test_ETPCluster_NodePort_Service_WithMultipleIPAddresses(t *testing.T) {
 				"192.168.1.1:80":        "10.128.0.2:3456,10.128.1.2:3456",
 				"[fd00::7777:0:0:1]:80": "[fe00::5555:0:0:2]:3456,[fe00::5555:0:0:3]:3456",
 			},
-			ExternalIDs: serviceExternalIDs(namespacedServiceName(svc.Namespace, svc.Name)),
+			ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(svc.Namespace, svc.Name)),
 		},
 		&nbdb.LoadBalancer{
 			UUID:     "Service_namespace1/svc-foo_TCP_node_switch_template_IPv4_merged",
@@ -620,7 +972,7 @@ func Test_ETPCluster_NodePort_Service_WithMultipleIPAddresses(t *testing.T) {
 				"^NODEIP_IPv4_2:30123": "10.128.0.2:3456,10.128.1.2:3456",
 				"^NODEIP_IPv4_0:30123": "10.128.0.2:3456,10.128.1.2:3456",
 			},
-			ExternalIDs: serviceExternalIDs(namespacedServiceName(svc.Namespace, svc.Name)),
+			ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(svc.Namespace, svc.Name)),
 		},
 		&nbdb.LoadBalancer{
 			UUID:     "Service_namespace1/svc-foo_TCP_node_switch_template_IPv6_merged",
@@ -631,7 +983,7 @@ func Test_ETPCluster_NodePort_Service_WithMultipleIPAddresses(t *testing.T) {
 				"^NODEIP_IPv6_1:30123": "[fe00::5555:0:0:2]:3456,[fe00::5555:0:0:3]:3456",
 				"^NODEIP_IPv6_0:30123": "[fe00::5555:0:0:2]:3456,[fe00::5555:0:0:3]:3456",
 			},
-			ExternalIDs: serviceExternalIDs(namespacedServiceName(svc.Namespace, svc.Name)),
+			ExternalIDs: loadBalancerExternalIDs(namespacedServiceName(svc.Namespace, svc.Name)),
 		},
 		nodeLogicalSwitch(nodeA.name, initialLsGroups),
 		nodeLogicalRouter(nodeA.name, initialLrGroups),
@@ -661,11 +1013,20 @@ func Test_ETPCluster_NodePort_Service_WithMultipleIPAddresses(t *testing.T) {
 }
 
 func nodeLogicalSwitch(nodeName string, lbGroups []string, namespacedServiceNames ...string) *nbdb.LogicalSwitch {
+	return nodeLogicalSwitchForNetwork(nodeName, lbGroups, &util.DefaultNetInfo{}, namespacedServiceNames...)
+}
+
+func nodeLogicalSwitchForNetwork(nodeName string, lbGroups []string, netInfo util.NetInfo, namespacedServiceNames ...string) *nbdb.LogicalSwitch {
+	switchName := nodeSwitchNameForNetwork(nodeName, netInfo)
 	ls := &nbdb.LogicalSwitch{
-		UUID:              nodeSwitchName(nodeName),
-		Name:              nodeSwitchName(nodeName),
+		UUID:              switchName,
+		Name:              switchName,
 		LoadBalancerGroup: lbGroups,
 	}
+	if !netInfo.IsDefault() {
+		ls.ExternalIDs = getExternalIDsForNetwork(netInfo.GetNetworkName())
+	}
+
 	if len(namespacedServiceNames) > 0 {
 		ls.LoadBalancer = namespacedServiceNames
 	}
@@ -673,11 +1034,20 @@ func nodeLogicalSwitch(nodeName string, lbGroups []string, namespacedServiceName
 }
 
 func nodeLogicalRouter(nodeName string, lbGroups []string, namespacedServiceNames ...string) *nbdb.LogicalRouter {
+	return nodeLogicalRouterForNetwork(nodeName, lbGroups, &util.DefaultNetInfo{}, namespacedServiceNames...)
+}
+
+func nodeLogicalRouterForNetwork(nodeName string, lbGroups []string, netInfo util.NetInfo, namespacedServiceNames ...string) *nbdb.LogicalRouter {
+	routerName := nodeGWRouterNameForNetwork(nodeName, netInfo)
 	lr := &nbdb.LogicalRouter{
-		UUID:              nodeGWRouterName(nodeName),
-		Name:              nodeGWRouterName(nodeName),
+		UUID:              routerName,
+		Name:              routerName,
 		LoadBalancerGroup: lbGroups,
 	}
+	if !netInfo.IsDefault() {
+		lr.ExternalIDs = getExternalIDsForNetwork(netInfo.GetNetworkName())
+	}
+
 	if len(namespacedServiceNames) > 0 {
 		lr.LoadBalancer = namespacedServiceNames
 	}
@@ -685,17 +1055,30 @@ func nodeLogicalRouter(nodeName string, lbGroups []string, namespacedServiceName
 }
 
 func nodeSwitchName(nodeName string) string {
-	return fmt.Sprintf("switch-%s", nodeName)
+	return nodeSwitchNameForNetwork(nodeName, &util.DefaultNetInfo{})
+}
+
+func nodeSwitchNameForNetwork(nodeName string, netInfo util.NetInfo) string {
+	return netInfo.GetNetworkScopedSwitchName(fmt.Sprintf("switch-%s", nodeName))
 }
 
 func nodeGWRouterName(nodeName string) string {
-	return fmt.Sprintf("gr-%s", nodeName)
+	return nodeGWRouterNameForNetwork(nodeName, &util.DefaultNetInfo{})
+}
+
+func nodeGWRouterNameForNetwork(nodeName string, netInfo util.NetInfo) string {
+	return netInfo.GetNetworkScopedGWRouterName(fmt.Sprintf("gr-%s", nodeName))
 }
 
 func lbGroup(name string, namespacedServiceNames ...string) *nbdb.LoadBalancerGroup {
+	return lbGroupForNetwork(name, &util.DefaultNetInfo{}, namespacedServiceNames...)
+}
+
+func lbGroupForNetwork(name string, netInfo util.NetInfo, namespacedServiceNames ...string) *nbdb.LoadBalancerGroup {
+	LBGroupName := netInfo.GetNetworkScopedLoadBalancerGroupName(name)
 	lbg := &nbdb.LoadBalancerGroup{
-		UUID: name,
-		Name: name,
+		UUID: LBGroupName,
+		Name: LBGroupName,
 	}
 	if len(namespacedServiceNames) > 0 {
 		lbg.LoadBalancer = namespacedServiceNames
@@ -780,42 +1163,29 @@ func tcpGatewayRouterExternalIDs() map[string]string {
 		"TCP_lb_gateway_router": "",
 	}
 }
-
-func serviceExternalIDs(namespacedServiceName string) map[string]string {
+func getExternalIDsForNetwork(network string) map[string]string {
+	role := types.NetworkRoleDefault
+	if network != types.DefaultNetworkName {
+		role = types.NetworkRolePrimary
+	}
 	return map[string]string{
+		types.NetworkRoleExternalID: role,
+		types.NetworkExternalID:     network,
+	}
+}
+
+func loadBalancerExternalIDs(namespacedServiceName string) map[string]string {
+	return loadBalancerExternalIDsForNetwork(namespacedServiceName, types.DefaultNetworkName)
+}
+
+func loadBalancerExternalIDsForNetwork(namespacedServiceName string, network string) map[string]string {
+	externalIDs := map[string]string{
 		types.LoadBalancerKindExternalID:  "Service",
 		types.LoadBalancerOwnerExternalID: namespacedServiceName,
-		types.NetworkExternalID:           types.DefaultNetworkName,
-		types.NetworkRoleExternalID:       types.NetworkRoleDefault,
 	}
-}
+	maps.Copy(externalIDs, getExternalIDsForNetwork(network))
+	return externalIDs
 
-func nodeSwitchTemplateLoadBalancer(nodePort int32, serviceName string, serviceNamespace string) *nbdb.LoadBalancer {
-	nodeTemplateIP := makeTemplate(makeLBNodeIPTemplateNamePrefix(v1.IPv4Protocol) + "0")
-	return &nbdb.LoadBalancer{
-		UUID:     nodeSwitchTemplateLoadBalancerName(serviceNamespace, serviceName, v1.IPv4Protocol),
-		Name:     nodeSwitchTemplateLoadBalancerName(serviceNamespace, serviceName, v1.IPv4Protocol),
-		Options:  templateServicesOptions(),
-		Protocol: &nbdb.LoadBalancerProtocolTCP,
-		Vips: map[string]string{
-			endpoint(refTemplate(nodeTemplateIP.Name), nodePort): refTemplate(makeTarget(serviceName, serviceNamespace, "TCP", nodePort, "node_switch_template", v1.IPv4Protocol)),
-		},
-		ExternalIDs: serviceExternalIDs(namespacedServiceName(serviceNamespace, serviceName)),
-	}
-}
-
-func nodeRouterTemplateLoadBalancer(nodePort int32, serviceName string, serviceNamespace string) *nbdb.LoadBalancer {
-	nodeTemplateIP := makeTemplate(makeLBNodeIPTemplateNamePrefix(v1.IPv4Protocol) + "0")
-	return &nbdb.LoadBalancer{
-		UUID:     nodeRouterTemplateLoadBalancerName(serviceNamespace, serviceName, v1.IPv4Protocol),
-		Name:     nodeRouterTemplateLoadBalancerName(serviceNamespace, serviceName, v1.IPv4Protocol),
-		Options:  templateServicesOptions(),
-		Protocol: &nbdb.LoadBalancerProtocolTCP,
-		Vips: map[string]string{
-			endpoint(refTemplate(nodeTemplateIP.Name), nodePort): refTemplate(makeTarget(serviceName, serviceNamespace, "TCP", nodePort, "node_router_template", v1.IPv4Protocol)),
-		},
-		ExternalIDs: serviceExternalIDs(namespacedServiceName(serviceNamespace, serviceName)),
-	}
 }
 
 func nodeIPTemplate(node *nodeInfo) *nbdb.ChassisTemplateVar {
@@ -829,6 +1199,10 @@ func nodeIPTemplate(node *nodeInfo) *nbdb.ChassisTemplateVar {
 }
 
 func nodeMergedTemplateLoadBalancer(nodePort int32, serviceName string, serviceNamespace string, outputPort int32, endpointIPs ...string) *nbdb.LoadBalancer {
+	return nodeMergedTemplateLoadBalancerForNetwork(nodePort, serviceName, serviceNamespace, outputPort, types.DefaultNetworkName, endpointIPs...)
+}
+
+func nodeMergedTemplateLoadBalancerForNetwork(nodePort int32, serviceName string, serviceNamespace string, outputPort int32, networkName string, endpointIPs ...string) *nbdb.LoadBalancer {
 	nodeTemplateIP := makeTemplate(makeLBNodeIPTemplateNamePrefix(v1.IPv4Protocol) + "0")
 	return &nbdb.LoadBalancer{
 		UUID:     nodeMergedTemplateLoadBalancerName(serviceNamespace, serviceName, v1.IPv4Protocol),
@@ -838,7 +1212,7 @@ func nodeMergedTemplateLoadBalancer(nodePort int32, serviceName string, serviceN
 		Vips: map[string]string{
 			endpoint(refTemplate(nodeTemplateIP.Name), nodePort): computeEndpoints(outputPort, endpointIPs...),
 		},
-		ExternalIDs: serviceExternalIDs(namespacedServiceName(serviceNamespace, serviceName)),
+		ExternalIDs: loadBalancerExternalIDsForNetwork(namespacedServiceName(serviceNamespace, serviceName), networkName),
 	}
 }
 
@@ -916,13 +1290,4 @@ func deleteTestNBGlobal(nbClient libovsdbclient.Client, zone string) error {
 	}
 
 	return nil
-}
-
-func readyEndpointsWithAddresses(addresses ...string) discovery.Endpoint {
-	return discovery.Endpoint{
-		Conditions: discovery.EndpointConditions{
-			Ready: utilpointer.Bool(true),
-		},
-		Addresses: addresses,
-	}
 }
