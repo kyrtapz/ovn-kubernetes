@@ -84,6 +84,17 @@ func getSampleServiceWithOnePortAndETPLocal(name string, targetPort int32, proto
 	return service
 }
 
+// OCP hack begin
+func getSampleServiceWithOnePortAndITPLocal(name string, targetPort int32, protocol v1.Protocol) *v1.Service {
+	service := getSampleServiceWithOnePort(name, targetPort, protocol)
+	service.Spec.Type = v1.ServiceTypeLoadBalancer
+	local := v1.ServiceInternalTrafficPolicyLocal
+	service.Spec.InternalTrafficPolicy = &local
+	return service
+}
+
+// OCP hack end
+
 func getSampleServiceWithTwoPorts(name1, name2 string, targetPort1, targetPort2 int32, protocol1, protocol2 v1.Protocol) *v1.Service {
 	service := getSampleService(false)
 	service.Spec.Ports = []v1.ServicePort{
@@ -4178,8 +4189,26 @@ func Test_getEndpointsForService(t *testing.T) {
 }
 
 func Test_makeNodeSwitchTargetIPs(t *testing.T) {
+	// OCP HACK BEGIN
+	name := "foo"
+	namespace := "testns"
+
+	defaultService := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: v1.ServiceSpec{
+			Type: v1.ServiceTypeClusterIP,
+		},
+	}
+
+	addFallbackAnnotationToService := func(s *v1.Service) *v1.Service {
+		s.Annotations = map[string]string{localWithFallbackAnnotation: ""}
+		return s
+	}
+	// OCP HACK END
+
 	tc := []struct {
 		name                string
+		service             *v1.Service
 		config              *lbConfig
 		node                string
 		expectedTargetIPsV4 []string
@@ -4188,7 +4217,8 @@ func Test_makeNodeSwitchTargetIPs(t *testing.T) {
 		expectedV6Changed   bool
 	}{
 		{
-			name: "cluster ip service", //ETP=cluster by default on all services
+			name:    "cluster ip service", //ETP=cluster by default on all services
+			service: defaultService,
 			config: &lbConfig{
 				vips:     []string{"1.2.3.4", "fe10::1"},
 				protocol: v1.ProtocolTCP,
@@ -4213,7 +4243,8 @@ func Test_makeNodeSwitchTargetIPs(t *testing.T) {
 			expectedV6Changed:   false,
 		},
 		{
-			name: "service with ETP=local, endpoint count changes",
+			name:    "LB service with ETP=local, endpoint count changes",
+			service: getSampleServiceWithOnePortAndETPLocal("tcp-example", 80, tcp),
 			config: &lbConfig{
 				vips:     []string{"1.2.3.4", "fe10::1"},
 				protocol: v1.ProtocolTCP,
@@ -4240,7 +4271,8 @@ func Test_makeNodeSwitchTargetIPs(t *testing.T) {
 			expectedV6Changed:   true,
 		},
 		{
-			name: "service with ETP=local, endpoint count is the same",
+			name:    "LB service with ETP=local, endpoint count is the same",
+			service: getSampleServiceWithOnePortAndETPLocal("tcp-example", 80, tcp),
 			config: &lbConfig{
 				vips:     []string{"1.2.3.4", "fe10::1"},
 				protocol: v1.ProtocolTCP,
@@ -4266,7 +4298,8 @@ func Test_makeNodeSwitchTargetIPs(t *testing.T) {
 			expectedV4Changed:   false,
 		},
 		{
-			name: "service with ETP=local, no local endpoints left",
+			name:    "LB service with ETP=local, no local endpoints left",
+			service: getSampleServiceWithOnePortAndETPLocal("tcp-example", 80, tcp),
 			config: &lbConfig{
 				vips:     []string{"1.2.3.4", "fe10::1"},
 				protocol: v1.ProtocolTCP,
@@ -4285,10 +4318,33 @@ func Test_makeNodeSwitchTargetIPs(t *testing.T) {
 			expectedV4Changed:   true,
 			expectedV6Changed:   true,
 		},
+		// OCP HACK BEGIN
+		{
+			name:    "LB service with ETP=local, no local endpoints left, localWithFallback annotation",
+			service: addFallbackAnnotationToService(getSampleServiceWithOnePortAndETPLocal("tcp-example", 80, tcp)),
+			config: &lbConfig{
+				vips:     []string{"1.2.3.4", "fe10::1"},
+				protocol: v1.ProtocolTCP,
+				inport:   80,
+				clusterEndpoints: lbEndpoints{
+					V4IPs: []string{"192.168.1.1"},     // on nodeB
+					V6IPs: []string{"fe00:0:0:0:2::2"}, // on nodeB
+					Port:  8080,
+				},
+				// nothing on nodeA
+				externalTrafficLocal: true,
+			},
+			node:                nodeA,
+			expectedTargetIPsV4: []string{"192.168.1.1"},     // fallback to cluster endpoints
+			expectedTargetIPsV6: []string{"fe00:0:0:0:2::2"}, // fallback to cluster endpoints
+			expectedV4Changed:   false,
+			expectedV6Changed:   false,
+		},
+		// OCP HACK END
 	}
 	for i, tt := range tc {
 		t.Run(fmt.Sprintf("%d_%s", i, tt.name), func(t *testing.T) {
-			actualTargetIPsV4, actualTargetIPsV6, actualV4Changed, actualV6Changed := makeNodeSwitchTargetIPs(tt.node, tt.config)
+			actualTargetIPsV4, actualTargetIPsV6, actualV4Changed, actualV6Changed := makeNodeSwitchTargetIPs(tt.service, tt.node, tt.config)
 			assert.Equal(t, tt.expectedTargetIPsV4, actualTargetIPsV4)
 			assert.Equal(t, tt.expectedTargetIPsV6, actualTargetIPsV6)
 			assert.Equal(t, tt.expectedV4Changed, actualV4Changed)
