@@ -288,7 +288,7 @@ run_kubectl apply -f rbac-ovnkube-db.yaml
 
 if [ "${OVN_ENABLE_OVNKUBE_IDENTITY}" == true ]; then
   run_kubectl apply -f ovnkube-identity.yaml
-  kubectl_wait_deployment ovnkube-identity
+  kubectl_wait_daemonset ovnkube-identity
 fi
 
 
