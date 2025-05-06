@@ -1295,9 +1295,6 @@ func GetPodNADToNetworkMapping(pod *corev1.Pod, nInfo NetInfo) (bool, map[string
 	for _, network := range allNetworks {
 		nadName := GetNADName(network.Namespace, network.Name)
 		if nInfo.HasNAD(nadName) {
-			if nInfo.IsPrimaryNetwork() {
-				return false, nil, fmt.Errorf("unexpected primary network %q specified with a NetworkSelectionElement %+v", nInfo.GetNetworkName(), network)
-			}
 			if _, ok := networkSelections[nadName]; ok {
 				return false, nil, fmt.Errorf("unexpected error: more than one of the same NAD %s specified for pod %s",
 					nadName, podDesc)
@@ -1309,7 +1306,12 @@ func GetPodNADToNetworkMapping(pod *corev1.Pod, nInfo NetInfo) (bool, map[string
 	if len(networkSelections) == 0 {
 		return false, nil, nil
 	}
-
+	if nInfo.IsPrimaryNetwork() {
+		if len(allNetworks) != 1 {
+			return false, nil, fmt.Errorf("unexpected primary network %q specified with a %d network elements", nInfo.GetNetworkName(), len(networkSelections))
+		}
+		// TODO: ensure that the nse matches the nInfo(?)
+	}
 	return true, networkSelections, nil
 }
 
@@ -1341,15 +1343,10 @@ func GetPodNADToNetworkMappingWithActiveNetwork(pod *corev1.Pod, nInfo NetInfo, 
 	if len(networkSelections) == 0 {
 		networkSelections = map[string]*nettypes.NetworkSelectionElement{}
 	}
-	networkSelections[activeNetworkNADs[0]] = &nettypes.NetworkSelectionElement{
-		Namespace: activeNetworkNADKey[0],
-		Name:      activeNetworkNADKey[1],
-	}
-
-	if nInfo.IsPrimaryNetwork() && AllowsPersistentIPs(nInfo) {
-		ipamClaimName, wasPersistentIPRequested := pod.Annotations[OvnUDNIPAMClaimName]
-		if wasPersistentIPRequested {
-			networkSelections[activeNetworkNADs[0]].IPAMClaimReference = ipamClaimName
+	if _, exists := networkSelections[activeNetworkNADKey[0]]; !exists {
+		networkSelections[activeNetworkNADs[0]] = &nettypes.NetworkSelectionElement{
+			Namespace: activeNetworkNADKey[0],
+			Name:      activeNetworkNADKey[1],
 		}
 	}
 
