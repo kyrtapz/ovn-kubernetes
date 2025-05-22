@@ -7,8 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
-
 	corev1 "k8s.io/api/core/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -25,6 +23,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	utilerrors "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util/errors"
+	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 )
 
 func (oc *DefaultNetworkController) syncPods(pods []interface{}) error {
@@ -238,9 +237,10 @@ func (oc *DefaultNetworkController) addLogicalPort(pod *corev1.Pod) (err error) 
 	}
 
 	var network *nadapi.NetworkSelectionElement
-	for _, network = range networkMap {
-		break
-	}
+	// TODO
+	//for _, network = range networkMap {
+	//	break
+	//}
 
 	var libovsdbExecuteTime time.Duration
 	var lsp *nbdb.LogicalSwitchPort

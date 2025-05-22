@@ -176,9 +176,10 @@ func (nse *NetworkSelectionElement) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &netSelectionElement); err != nil {
 		return err
 	}
-	if len(netSelectionElement.IPRequest) > 0 && netSelectionElement.IPAMClaimReference != "" {
-		return TooManyIPSources
-	}
+	// TOOD
+	//if len(netSelectionElement.IPRequest) > 0 && netSelectionElement.IPAMClaimReference != "" {
+	//	return TooManyIPSources
+	//}
 	*nse = NetworkSelectionElement(netSelectionElement)
 	return nil
 }

@@ -1285,6 +1285,25 @@ func GetPodNADToNetworkMapping(pod *corev1.Pod, nInfo NetInfo) (bool, map[string
 		return true, networkSelections, nil
 	}
 
+	if nInfo.IsPrimaryNetwork() {
+		network, err := GetK8sPodDefaultNetworkSelection(pod)
+		if err != nil {
+			// multus won't add this Pod if this fails, should never happen
+			return false, nil, fmt.Errorf("error getting default-network's network-attachment for pod %s: %v", podDesc, err)
+		}
+		nads := nInfo.GetNADs()
+		if len(nads) < 1 {
+			return false, nil, fmt.Errorf("need nads")
+		}
+		if network != nil {
+			nsnamenad := strings.Split(nads[0], "/")
+			network.Namespace = nsnamenad[0]
+			network.Name = nsnamenad[1]
+			networkSelections[GetNADName(nsnamenad[0], nsnamenad[1])] = network
+		}
+		return true, networkSelections, nil
+	}
+
 	// For non-default network controller, try to see if its name exists in the Pod's k8s.v1.cni.cncf.io/networks, if no,
 	// return false;
 	allNetworks, err := GetK8sPodAllNetworkSelections(pod)
@@ -1341,15 +1360,10 @@ func GetPodNADToNetworkMappingWithActiveNetwork(pod *corev1.Pod, nInfo NetInfo, 
 	if len(networkSelections) == 0 {
 		networkSelections = map[string]*nettypes.NetworkSelectionElement{}
 	}
-	networkSelections[activeNetworkNADs[0]] = &nettypes.NetworkSelectionElement{
-		Namespace: activeNetworkNADKey[0],
-		Name:      activeNetworkNADKey[1],
-	}
-
-	if nInfo.IsPrimaryNetwork() && AllowsPersistentIPs(nInfo) {
-		ipamClaimName, wasPersistentIPRequested := pod.Annotations[OvnUDNIPAMClaimName]
-		if wasPersistentIPRequested {
-			networkSelections[activeNetworkNADs[0]].IPAMClaimReference = ipamClaimName
+	if _, exists := networkSelections[activeNetworkNADs[0]]; !exists {
+		networkSelections[activeNetworkNADs[0]] = &nettypes.NetworkSelectionElement{
+			Namespace: activeNetworkNADKey[0],
+			Name:      activeNetworkNADKey[1],
 		}
 	}
 
