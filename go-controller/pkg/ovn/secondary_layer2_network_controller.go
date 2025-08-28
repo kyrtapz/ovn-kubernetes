@@ -312,19 +312,9 @@ func NewSecondaryLayer2NetworkController(
 	ipv4Mode, ipv6Mode := netInfo.IPMode()
 	addressSetFactory := addressset.NewOvnAddressSetFactory(cnci.nbClient, ipv4Mode, ipv6Mode)
 
-	lsManager := lsm.NewL2SwitchManager()
+	lsManagerFactoryFn := lsm.NewL2SwitchManager
 	if netInfo.IsPrimaryNetwork() {
-		var gatewayIPs, mgmtIPs []*net.IPNet
-		for _, subnet := range netInfo.Subnets() {
-			if gwIP := netInfo.GetNodeGatewayIP(subnet.CIDR); gwIP != nil {
-				gatewayIPs = append(gatewayIPs, gwIP)
-			}
-			if mgmtIP := netInfo.GetNodeManagementIP(subnet.CIDR); mgmtIP != nil {
-				mgmtIPs = append(mgmtIPs, mgmtIP)
-			}
-		}
-
-		lsManager = lsm.NewL2SwitchManagerForUserDefinedPrimaryNetwork(gatewayIPs, mgmtIPs)
+		lsManagerFactoryFn = lsm.NewL2SwitchManagerForUserDefinedPrimaryNetwork
 	}
 
 	oc := &SecondaryLayer2NetworkController{
@@ -335,7 +325,7 @@ func NewSecondaryLayer2NetworkController(
 					CommonNetworkControllerInfo: *cnci,
 					controllerName:              getNetworkControllerName(netInfo.GetNetworkName()),
 					ReconcilableNetInfo:         util.NewReconcilableNetInfo(netInfo),
-					lsManager:                   lsManager,
+					lsManager:                   lsManagerFactoryFn(),
 					logicalPortCache:            portCache,
 					namespaces:                  make(map[string]*namespaceInfo),
 					namespacesMutex:             sync.Mutex{},
@@ -491,14 +481,11 @@ func (oc *SecondaryLayer2NetworkController) init() error {
 	oc.clusterLoadBalancerGroupUUID = clusterLBGroupUUID
 	oc.switchLoadBalancerGroupUUID = switchLBGroupUUID
 	oc.routerLoadBalancerGroupUUID = routerLBGroupUUID
-	excludeSubnets := oc.ExcludeSubnets()
-	excludeSubnets = append(excludeSubnets, oc.InfrastructureSubnets()...)
 
 	_, err = oc.initializeLogicalSwitch(
 		oc.GetNetworkScopedSwitchName(types.OVNLayer2Switch),
 		oc.Subnets(),
-		excludeSubnets,
-		oc.ReservedSubnets(),
+		oc.ExcludeSubnets(),
 		oc.clusterLoadBalancerGroupUUID,
 		oc.switchLoadBalancerGroupUUID,
 	)
@@ -603,13 +590,14 @@ func (oc *SecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *corev1
 				if err != nil {
 					return err
 				}
-				shouldIsolate := isUDNAdvertised && config.OVNKubernetesFeature.AdvertisedUDNIsolationMode == config.AdvertisedUDNIsolationModeStrict
-				if shouldIsolate {
-					if err = oc.addAdvertisedNetworkIsolation(node.Name); err != nil {
-						return err
+				if !isUDNAdvertised {
+					if util.IsRouteAdvertisementsEnabled() {
+						if err = oc.deleteAdvertisedNetworkIsolation(node.Name); err != nil {
+							return err
+						}
 					}
 				} else {
-					if err = oc.deleteAdvertisedNetworkIsolation(node.Name); err != nil {
+					if err = oc.addAdvertisedNetworkIsolation(node.Name); err != nil {
 						return err
 					}
 				}

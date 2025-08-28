@@ -1154,6 +1154,17 @@ func isIPv6Supported(cs kubernetes.Interface) bool {
 	return v6
 }
 
+func filterIPs(cs clientset.Interface, cidrs ...string) []string {
+	var supportedCIDRs []string
+	for _, cidr := range cidrs {
+		if !isIPFamilySupported(cs, cidr) {
+			continue
+		}
+		supportedCIDRs = append(supportedCIDRs, cidr)
+	}
+	return supportedCIDRs
+}
+
 func getSupportedIPFamilies(cs kubernetes.Interface) (bool, bool) {
 	n, err := e2enode.GetRandomReadySchedulableNode(context.TODO(), cs)
 	framework.ExpectNoError(err, "must fetch a Ready Node")

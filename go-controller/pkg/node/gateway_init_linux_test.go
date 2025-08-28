@@ -288,8 +288,6 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 		rm := routemanager.NewController()
 		netInfo := &multinetworkmocks.NetInfo{}
 		netInfo.On("GetPodNetworkAdvertisedOnNodeVRFs", nodeName).Return(nil)
-		netInfo.On("GetNodeGatewayIP", hostSubnets[0]).Return(util.GetNodeGatewayIfAddr(hostSubnets[0]))
-		netInfo.On("GetNodeManagementIP", hostSubnets[0]).Return(util.GetNodeManagementIfAddr(hostSubnets[0]))
 		mp, err := managementport.NewManagementPortController(&existingNode, hostSubnets, "", "", rm, netInfo)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -906,7 +904,7 @@ func shareGatewayInterfaceDPUHostTest(app *cli.App, testNS ns.NetNS, uplinkName,
 		ipnet.IP = ip
 		routeManager := routemanager.NewController()
 		cnnci := NewCommonNodeNetworkControllerInfo(kubeFakeClient, fakeClient.AdminPolicyRouteClient, wf, nil, nodeName, routeManager)
-		nc := newDefaultNodeNetworkController(cnnci, stop, wg, routeManager, nil, nil)
+		nc := newDefaultNodeNetworkController(cnnci, stop, wg, routeManager, nil)
 		// must run route manager manually which is usually started with nc.Start()
 		wg.Add(1)
 		go func() {
@@ -1213,8 +1211,6 @@ OFPT_GET_CONFIG_REPLY (xid=0x4): frags=normal miss_send_len=0`
 		rm := routemanager.NewController()
 		netInfo := &multinetworkmocks.NetInfo{}
 		netInfo.On("GetPodNetworkAdvertisedOnNodeVRFs", nodeName).Return(nil)
-		netInfo.On("GetNodeGatewayIP", hostSubnets[0]).Return(util.GetNodeGatewayIfAddr(hostSubnets[0]))
-		netInfo.On("GetNodeManagementIP", hostSubnets[0]).Return(util.GetNodeManagementIfAddr(hostSubnets[0]))
 		mp, err := managementport.NewManagementPortController(&existingNode, hostSubnets, "", "", rm, netInfo)
 		Expect(err).NotTo(HaveOccurred())
 

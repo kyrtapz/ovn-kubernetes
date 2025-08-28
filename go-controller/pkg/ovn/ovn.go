@@ -397,8 +397,7 @@ func (oc *DefaultNetworkController) syncNodeGateway(node *corev1.Node) error {
 		return fmt.Errorf("error creating gateway for node %s: %v", node.Name, err)
 	}
 
-	if util.IsPodNetworkAdvertisedAtNode(oc, node.Name) &&
-		config.OVNKubernetesFeature.AdvertisedUDNIsolationMode == config.AdvertisedUDNIsolationModeStrict {
+	if util.IsPodNetworkAdvertisedAtNode(oc, node.Name) {
 		return oc.addAdvertisedNetworkIsolation(node.Name)
 	}
 	return oc.deleteAdvertisedNetworkIsolation(node.Name)
