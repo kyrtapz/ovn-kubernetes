@@ -91,19 +91,6 @@ type Layer3Subnet struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.ipam) || !has(self.ipam.mode) || self.ipam.mode != 'Disabled' || self.role == 'Secondary'", message="Disabled ipam.mode is only supported for Secondary network"
 // +kubebuilder:validation:XValidation:rule="!has(self.joinSubnets) || has(self.role) && self.role == 'Primary'", message="JoinSubnets is only supported for Primary network"
 // +kubebuilder:validation:XValidation:rule="!has(self.subnets) || !has(self.mtu) || !self.subnets.exists_one(i, isCIDR(i) && cidr(i).ip().family() == 6) || self.mtu >= 1280", message="MTU should be greater than or equal to 1280 when IPv6 subnet is used"
-// +kubebuilder:validation:XValidation:rule="!has(self.defaultGatewayIPs) || has(self.role) && self.role == 'Primary'", message="defaultGatewayIPs is only supported for Primary network"
-// +kubebuilder:validation:XValidation:rule="!has(self.defaultGatewayIPs) || self.defaultGatewayIPs.all(ip, self.subnets.exists(subnet, cidr(subnet).containsIP(ip)))", message="defaultGatewayIPs must belong to one of the subnets specified in the subnets field"
-// +kubebuilder:validation:XValidation:rule="!has(self.defaultGatewayIPs) || size(self.defaultGatewayIPs) == size(self.subnets)", message="defaultGatewayIPs must be specified for all IP families"
-// +kubebuilder:validation:XValidation:rule="!has(self.reservedSubnets) || has(self.subnets)", message="reservedSubnets must be unset when subnets is unset"
-// +kubebuilder:validation:XValidation:rule="!has(self.reservedSubnets) || has(self.role) && self.role == 'Primary'", message="reservedSubnets is only supported for Primary network"
-// +kubebuilder:validation:XValidation:rule="!has(self.infrastructureSubnets) || has(self.subnets)", message="infrastructureSubnets must be unset when subnets is unset"
-// +kubebuilder:validation:XValidation:rule="!has(self.infrastructureSubnets) || has(self.role) && self.role == 'Primary'", message="infrastructureSubnets is only supported for Primary network"
-// +kubebuilder:validation:XValidation:rule="!has(self.infrastructureSubnets) || !has(self.defaultGatewayIPs) || self.defaultGatewayIPs.all(ip, self.infrastructureSubnets.exists(subnet, cidr(subnet).containsIP(ip)))", message="defaultGatewayIPs have to belong to infrastructureSubnets"
-//
-// TODO: Re-enable when CEL validation is supported
-// // +kubebuilder:validation:XValidation:rule="!has(self.reservedSubnets) || self.reservedSubnets.all(e, self.subnets.exists(s, cidr(s).containsCIDR(cidr(e))))",message="reservedSubnets must be subnetworks of the networks specified in the subnets field",fieldPath=".reservedSubnets"
-// // +kubebuilder:validation:XValidation:rule="!has(self.infrastructureSubnets) || self.infrastructureSubnets.all(e, self.subnets.exists(s, cidr(s).containsCIDR(cidr(e))))",message="infrastructureSubnets must be subnetworks of the networks specified in the subnets field",fieldPath=".infrastructureSubnets"
-// // +kubebuilder:validation:XValidation:rule="!has(self.infrastructureSubnets) || !has(self.reservedSubnets) || self.infrastructureSubnets.all(infra, !self.reservedSubnets.exists(reserved, cidr(infra).containsCIDR(reserved) || cidr(reserved).containsCIDR(infra)))", message="infrastructureSubnets and reservedSubnets must not overlap"
 type Layer2Config struct {
 	// Role describes the network role in the pod.
 	//

@@ -60,7 +60,7 @@ func (manager *LogicalSwitchManager) AddOrUpdateSwitch(switchName string, hostSu
 			}
 		}
 	}
-	return manager.allocator.AddOrUpdateSubnet(switchName, hostSubnets, reservedSubnets, excludeSubnets...)
+	return manager.allocator.AddOrUpdateSubnet(switchName, hostSubnets, excludeSubnets...)
 }
 
 // AddNoHostSubnetSwitch adds/updates a switch without any host subnets
@@ -69,7 +69,7 @@ func (manager *LogicalSwitchManager) AddNoHostSubnetSwitch(switchName string) er
 	// setting the hostSubnets slice argument to nil in the cache means an object
 	// exists for the switch but it was not assigned a hostSubnet by ovn-kubernetes
 	// this will be true for switches created on nodes that are marked as host-subnet only.
-	return manager.allocator.AddOrUpdateSubnet(switchName, nil, nil)
+	return manager.allocator.AddOrUpdateSubnet(switchName, nil)
 }
 
 // Remove a switch from the the logical switch manager
