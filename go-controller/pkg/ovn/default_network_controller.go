@@ -946,10 +946,9 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 		// |                    |                   |                                                 |
 		// |--------------------+-------------------+-------------------------------------------------+
 		newNodeIsLocalZoneNode := h.oc.isLocalZoneNode(newNode)
-		zoneClusterChanged := h.oc.nodeZoneClusterChanged(oldNode, newNode)
+		zoneClusterChanged := h.oc.nodeZoneClusterChanged(oldNode, newNode, newNodeIsLocalZoneNode, types.DefaultNetworkName)
 		nodeSubnetChange := nodeSubnetChanged(oldNode, newNode, types.DefaultNetworkName)
 		nodeEncapIPsChanged := util.NodeEncapIPsChanged(oldNode, newNode)
-		nodePrimaryDPUHostAddrChanged := util.NodePrimaryDPUHostAddrAnnotationChanged(oldNode, newNode)
 
 		var aggregatedErrors []error
 		if newNodeIsLocalZoneNode {
@@ -1007,17 +1006,10 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 			// Also check if node subnet changed, so static routes are properly set
 			// Also check if the node is used to be a hybrid overlay node
 			syncZoneIC = syncZoneIC || h.oc.isLocalZoneNode(oldNode) || nodeSubnetChange || zoneClusterChanged ||
-				switchToOvnNode || nodeEncapIPsChanged || nodePrimaryDPUHostAddrChanged
+				switchToOvnNode || nodeEncapIPsChanged
 			if syncZoneIC {
 				klog.Infof("Node %q in remote zone %q, network %q, needs interconnect zone sync up. Zone cluster changed: %v",
 					newNode.Name, util.GetNodeZone(newNode), h.oc.GetNetworkName(), zoneClusterChanged)
-			}
-			// Reprovisioning the DPU (including OVS), which is pinned to a host, will change the system ID but not the node.
-			if config.OvnKubeNode.Mode == types.NodeModeDPU && nodeChassisChanged(oldNode, newNode) {
-				if err := h.oc.zoneChassisHandler.DeleteRemoteZoneNode(oldNode); err != nil {
-					aggregatedErrors = append(aggregatedErrors, err)
-				}
-				syncZoneIC = true
 			}
 			if err := h.oc.addUpdateRemoteNodeEvent(newNode, syncZoneIC); err != nil {
 				aggregatedErrors = append(aggregatedErrors, err)
@@ -1078,7 +1070,8 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 		}
 
 		_, syncEIPNodeFailed := h.oc.syncEIPNodeFailed.Load(newNode.Name)
-		if syncEIPNodeFailed {
+		// update only if the GR join IP changed for default network
+		if syncEIPNodeFailed || joinCIDRChanged(oldNode, newNode, h.oc.GetNetworkName()) {
 			err := h.oc.eIPC.addEgressNode(newNode)
 			if err != nil {
 				h.oc.syncEIPNodeFailed.Store(newNode.Name, true)

@@ -113,7 +113,7 @@ func validateTopology(spec SpecGetter) error {
 	if spec.GetTopology() == userdefinednetworkv1.NetworkTopologyLayer3 && spec.GetLayer3() == nil ||
 		spec.GetTopology() == userdefinednetworkv1.NetworkTopologyLayer2 && spec.GetLayer2() == nil ||
 		spec.GetTopology() == userdefinednetworkv1.NetworkTopologyLocalnet && spec.GetLocalnet() == nil {
-		return config.NewTopologyConfigMismatchError(string(spec.GetTopology()))
+		return fmt.Errorf("topology %[1]s is specified but %[1]s config is nil", spec.GetTopology())
 	}
 	return nil
 }
@@ -142,10 +142,10 @@ func renderCNINetworkConfig(networkName, nadName string, spec SpecGetter) (map[s
 			return nil, err
 		}
 		if ipamEnabled(cfg.IPAM) && len(cfg.Subnets) == 0 {
-			return nil, config.NewSubnetsRequiredError()
+			return nil, fmt.Errorf("subnets is required with ipam.mode is Enabled or unset")
 		}
 		if !ipamEnabled(cfg.IPAM) && len(cfg.Subnets) > 0 {
-			return nil, config.NewSubnetsMustBeUnsetError()
+			return nil, fmt.Errorf("subnets must be unset when ipam.mode is Disabled")
 		}
 
 		netConfSpec.Role = strings.ToLower(string(cfg.Role))
@@ -235,7 +235,7 @@ func validateIPAM(ipam *userdefinednetworkv1.IPAMConfig) error {
 		return nil
 	}
 	if ipam.Lifecycle == userdefinednetworkv1.IPAMLifecyclePersistent && !ipamEnabled(ipam) {
-		return config.NewIPAMLifecycleNotSupportedError()
+		return fmt.Errorf("lifecycle Persistent is only supported when ipam.mode is Enabled")
 	}
 	return nil
 }
