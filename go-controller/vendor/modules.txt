@@ -1174,8 +1174,9 @@ k8s.io/kube-openapi/pkg/schemaconv
 k8s.io/kube-openapi/pkg/spec3
 k8s.io/kube-openapi/pkg/util/proto
 k8s.io/kube-openapi/pkg/validation/spec
-# k8s.io/kubernetes v1.32.6
-## explicit; go 1.23.0
+# k8s.io/kubernetes v1.33.3
+## explicit; go 1.24.0
+k8s.io/kubernetes/pkg/api/v1/pod
 k8s.io/kubernetes/pkg/apis/core
 k8s.io/kubernetes/pkg/probe
 k8s.io/kubernetes/pkg/probe/http
