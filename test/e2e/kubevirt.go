@@ -1334,6 +1334,9 @@ fi
 		var err error
 		crClient, err = newControllerRuntimeClient()
 		Expect(err).NotTo(HaveOccurred())
+
+		virtClient, err = kubevirt.NewClient("/tmp")
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	Context("with default pod network", Ordered, func() {

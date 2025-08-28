@@ -902,6 +902,37 @@ func (gw *GatewayManager) gatewayInit(
 	return nil
 }
 
+// GetNetworkScopedClusterSubnetSNATMatch returns the match for the SNAT rule for the cluster default network
+// and the match for the SNAT rule for the L3/L2 user defined network.
+// If the network is not advertised:
+// - For Layer2 topology, the match is the output port of the GR to the join switch since in L2 there is only 1 router but two cSNATs.
+// - For Layer3 topology, the match is empty.
+// If the network is advertised:
+// - For Layer2 topology, the match is the output port of the GR to the join switch and the destination must be a nodeIP in the cluster.
+// - For Layer3 topology, the match is the destination must be a nodeIP in the cluster.
+func GetNetworkScopedClusterSubnetSNATMatch(nbClient libovsdbclient.Client, netInfo util.NetInfo, nodeName string, isNetworkAdvertised bool, ipFamily utilnet.IPFamily) (string, error) {
+	if !isNetworkAdvertised {
+		if netInfo.TopologyType() != types.Layer2Topology {
+			return "", nil
+		}
+		return fmt.Sprintf("outport == %q", types.GWRouterToExtSwitchPrefix+netInfo.GetNetworkScopedGWRouterName(nodeName)), nil
+	} else {
+		// if the network is advertised, we need to ensure that the SNAT exists with the correct conditional destination match
+		dbIDs := getEgressIPAddrSetDbIDs(NodeIPAddrSetName, types.DefaultNetworkName, DefaultNetworkControllerName)
+		addressSetFactory := addressset.NewOvnAddressSetFactory(nbClient, config.IPv4Mode, config.IPv6Mode)
+		addrSet, err := addressSetFactory.GetAddressSet(dbIDs)
+		if err != nil {
+			return "", fmt.Errorf("cannot ensure that addressSet %s exists %v", NodeIPAddrSetName, err)
+		}
+		ipv4ClusterNodeIPAS, ipv6ClusterNodeIPAS := addrSet.GetASHashNames()
+		destinationMatch := getClusterNodesDestinationBasedSNATMatch(ipv4ClusterNodeIPAS, ipv6ClusterNodeIPAS, ipFamily)
+		if netInfo.TopologyType() != types.Layer2Topology {
+			return destinationMatch, nil
+		}
+		return fmt.Sprintf("outport == %q && (%s)", types.GWRouterToExtSwitchPrefix+netInfo.GetNetworkScopedGWRouterName(nodeName), destinationMatch), nil
+	}
+}
+
 // addExternalSwitch creates a switch connected to the external bridge and connects it to
 // the gateway router
 func (gw *GatewayManager) addExternalSwitch(prefix, interfaceID, gatewayRouter, macAddress, physNetworkName string, ipAddresses []*net.IPNet, vlanID *uint) error {

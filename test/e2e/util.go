@@ -1434,3 +1434,18 @@ func getAgnHostHTTPPortBindFullCMD(port uint16) []string {
 func getAgnHostHTTPPortBindCMDArgs(port uint16) []string {
 	return []string{"netexec", fmt.Sprintf("--http-port=%d", port)}
 }
+
+// executeFileTemplate executes `name` template from the provided `templates`
+// using `data`as input and writes the results to `directory/name`
+func executeFileTemplate(templates *template.Template, directory, name string, data any) error {
+	f, err := os.OpenFile(filepath.Join(directory, name), os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	err = templates.ExecuteTemplate(f, name, data)
+	if err != nil {
+		return err
+	}
+	return nil
+}

@@ -821,6 +821,20 @@ func Test_allocatePodAnnotationWithRollback(t *testing.T) {
 				ifaddrs = `{"network":{"ipv6":"fd99::4/64"}}`
 			}
 
+			ifaddrs := `{"network":{"ipv4":"100.65.0.4/16","ipv6":"fd99::4/64"}}`
+			if tt.isSingleStackIPv4 {
+				ifaddrs = `{"network":{"ipv4":"100.65.0.4/16"}}`
+			} else if tt.isSingleStackIPv6 {
+				ifaddrs = `{"network":{"ipv6":"fd99::4/64"}}`
+			}
+
+			ifaddrs := `{"network":{"ipv4":"100.65.0.4/16","ipv6":"fd99::4/64"}}`
+			if tt.isSingleStackIPv4 {
+				ifaddrs = `{"network":{"ipv4":"100.65.0.4/16"}}`
+			} else if tt.isSingleStackIPv6 {
+				ifaddrs = `{"network":{"ipv6":"fd99::4/64"}}`
+			}
+
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{

@@ -1058,7 +1058,7 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 			netdevName = netdevs[0]
 			config.Gateway.Interface = netdevName
 		}
-		err = nc.initGatewayDPUHost(nc.nodeAddress)
+		err = nc.initGatewayDPUHost(nc.nodeAddress, nodeAnnotator)
 		if err != nil {
 			return err
 		}
