@@ -19,7 +19,7 @@ import (
 // Allocator manages the allocation of IP within specific set of subnets
 // identified by a name. Allocator should be threadsafe.
 type Allocator interface {
-	AddOrUpdateSubnet(name string, subnets []*net.IPNet, excludeSubnets ...*net.IPNet) error
+	AddOrUpdateSubnet(name string, subnets []*net.IPNet, reservedSubnets []*net.IPNet, excludeSubnets ...*net.IPNet) error
 	DeleteSubnet(name string)
 	GetSubnets(name string) ([]*net.IPNet, error)
 	AllocateUntilFull(name string) error
@@ -70,6 +70,14 @@ func newIPAMAllocator(cidr *net.IPNet) (ipallocator.Interface, error) {
 	})
 }
 
+// newReservedIPAMAllocator provides an ipam interface which can be used for IPAM
+// allocations for a given cidr using static IP allocations only.
+func newReservedIPAMAllocator(cidr *net.IPNet) (ipallocator.StaticAllocator, error) {
+	return ipallocator.NewAllocatorCIDRRange(cidr, func(max int, rangeSpec string) (bitmapallocator.Interface, error) {
+		return bitmapallocator.NewRoundRobinAllocationMap(max, rangeSpec), nil
+	})
+}
+
 // Initializes a new subnet IP allocator
 func NewAllocator() *allocator {
 	return &allocator{
@@ -80,13 +88,13 @@ func NewAllocator() *allocator {
 }
 
 // AddOrUpdateSubnet set to the allocator for IPAM management, or update it.
-func (allocator *allocator) AddOrUpdateSubnet(name string, subnets []*net.IPNet, excludeSubnets ...*net.IPNet) error {
+func (allocator *allocator) AddOrUpdateSubnet(name string, subnets []*net.IPNet, reservedSubnets []*net.IPNet, excludeSubnets ...*net.IPNet) error {
 	allocator.Lock()
 	defer allocator.Unlock()
 	if subnetInfo, ok := allocator.cache[name]; ok && !reflect.DeepEqual(subnetInfo.subnets, subnets) {
 		klog.Warningf("Replacing subnets %v with %v for %s", util.StringSlice(subnetInfo.subnets), util.StringSlice(subnets), name)
 	}
-	var ipams []ipallocator.Interface
+	var ipams []ipallocator.ContinuousAllocator
 	for _, subnet := range subnets {
 		ipam, err := allocator.ipamFunc(subnet)
 		if err != nil {
@@ -94,25 +102,36 @@ func (allocator *allocator) AddOrUpdateSubnet(name string, subnets []*net.IPNet,
 		}
 		ipams = append(ipams, ipam)
 	}
-	allocator.cache[name] = subnetInfo{
-		subnets: subnets,
-		ipams:   ipams,
-	}
 
-	for _, excludeSubnet := range excludeSubnets {
+	// reservedSubnets is a subset of subnets, and it should not be used by automatic IPAM
+	for _, excludeFromIPAM := range append(reservedSubnets, excludeSubnets...) {
 		var excluded bool
 		for i, subnet := range subnets {
-			if util.ContainsCIDR(subnet, excludeSubnet) {
-				err := reserveSubnets(excludeSubnet, ipams[i])
+			if util.ContainsCIDR(subnet, excludeFromIPAM) {
+				err := reserveSubnets(excludeFromIPAM, ipams[i])
 				if err != nil {
-					return fmt.Errorf("failed to exclude subnet %s for %s: %w", excludeSubnet, name, err)
+					return fmt.Errorf("failed to exclude subnet %s for %s: %w", excludeFromIPAM, name, err)
 				}
 			}
 			excluded = true
 		}
 		if !excluded {
-			return fmt.Errorf("failed to exclude subnet %s for %s: not contained in any of the subnets", excludeSubnet, name)
+			return fmt.Errorf("failed to exclude subnet %s for %s: not contained in any of the subnets", excludeFromIPAM, name)
 		}
+	}
+
+	var staticIPAMs []ipallocator.StaticAllocator
+	for _, reservedSubnet := range reservedSubnets {
+		ipam, err := allocator.reservedIPAMFunc(reservedSubnet)
+		if err != nil {
+			return fmt.Errorf("failed to initialize IPAM of reserved subnet %s for %s: %w", reservedSubnet, name, err)
+		}
+		staticIPAMs = append(staticIPAMs, ipam)
+	}
+	allocator.cache[name] = subnetInfo{
+		subnets:     subnets,
+		ipams:       ipams,
+		staticIPAMs: staticIPAMs,
 	}
 	return nil
 }
@@ -200,7 +219,7 @@ func (allocator *allocator) AllocateIPPerSubnet(name string, ips []*net.IPNet) e
 					err = fmt.Errorf("failed to allocate IP %s for %s: attempted to reserve multiple IPs in the same IPAM instance", ipnet.IP, name)
 					return err
 				}
-				if err = ipam.Allocate(ipnet.IP); err != nil {
+				if err = staticIPAM.Allocate(ipnet.IP); err != nil {
 					return err
 				}
 				allocated[idx] = ipnet

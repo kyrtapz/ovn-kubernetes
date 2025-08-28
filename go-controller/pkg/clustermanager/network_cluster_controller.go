@@ -792,9 +792,14 @@ func newIPAllocatorForNetwork(netInfo util.NetInfo) (subnet.Allocator, error) {
 		}
 	}
 
+	if isLayer2UserDefinedPrimaryNetwork(netInfo) && len(netInfo.InfrastructureSubnets()) == 0 {
+		excludeSubnets = append(excludeSubnets, infrastructureExcludeCIDRs(netInfo)...)
+	}
+
 	if err := ipAllocator.AddOrUpdateSubnet(
 		netInfo.GetNetworkName(),
 		ipNets,
+		netInfo.ReservedSubnets(),
 		excludeSubnets...,
 	); err != nil {
 		return nil, err
