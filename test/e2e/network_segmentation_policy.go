@@ -154,6 +154,29 @@ var _ = ginkgo.Describe("Network Segmentation: Network Policies", feature.Networ
 				),
 			),
 			ginkgo.Entry(
+				"in L2 dualstack primary UDN with custom network",
+				networkAttachmentConfigParams{
+					name:     nadName,
+					topology: "layer2",
+					cidr:     joinStrings(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
+					role:     "primary",
+					defaultGatewayIPs: joinStrings(customL2IPv4Gateway, customL2IPv6Gateway),
+					reservedCIDRs:     joinStrings(customL2IPv4ReservedCIDR, customL2IPv6ReservedCIDR),
+					infraCIDRs:        joinStrings(customL2IPv4InfraCIDR, customL2IPv6InfraCIDR),
+				},
+				*podConfig(
+					"client-pod",
+					withNodeSelector(map[string]string{nodeHostnameKey: workerOneNodeName}),
+				),
+				*podConfig(
+					"server-pod",
+					withCommand(func() []string {
+						return httpServerContainerCmd(port)
+					}),
+					withNodeSelector(map[string]string{nodeHostnameKey: workerTwoNodeName}),
+				),
+			),
+			ginkgo.Entry(
 				"in L3 dualstack primary UDN",
 				networkAttachmentConfigParams{
 					name:     nadName,

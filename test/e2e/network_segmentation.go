@@ -132,6 +132,17 @@ var _ = Describe("Network Segmentation", feature.NetworkSegmentation, func() {
 							role:     "primary",
 						},
 					),
+					Entry("L2 primary UDN with custom network",
+						&networkAttachmentConfigParams{
+							name:              nadName,
+							topology:          "layer2",
+							cidr:              joinStrings(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
+							role:              "primary",
+							defaultGatewayIPs: joinStrings(customL2IPv4Gateway, customL2IPv6Gateway),
+							reservedCIDRs:     joinStrings(customL2IPv4ReservedCIDR, customL2IPv6ReservedCIDR),
+							infraCIDRs:        joinStrings(customL2IPv4InfraCIDR, customL2IPv6InfraCIDR),
+						},
+					),
 					Entry("L3 primary UDN",
 						&networkAttachmentConfigParams{
 							name:     nadName,
@@ -203,6 +214,27 @@ var _ = Describe("Network Segmentation", feature.NetworkSegmentation, func() {
 							topology: "layer2",
 							cidr:     joinCIDRs(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
 							role:     "primary",
+						},
+						*podConfig(
+							"client-pod",
+						),
+						*podConfig(
+							"server-pod",
+							withCommand(func() []string {
+								return httpServerContainerCmd(podClusterNetPort)
+							}),
+						),
+					),
+					Entry(
+						"two pods connected over a L2 primary UDN with custom network",
+						&networkAttachmentConfigParams{
+							name:              nadName,
+							topology:          "layer2",
+							cidr:              joinStrings(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
+							role:              "primary",
+							defaultGatewayIPs: joinStrings(customL2IPv4Gateway, customL2IPv6Gateway),
+							reservedCIDRs:     joinStrings(customL2IPv4ReservedCIDR, customL2IPv6ReservedCIDR),
+							infraCIDRs:        joinStrings(customL2IPv4InfraCIDR, customL2IPv6InfraCIDR),
 						},
 						*podConfig(
 							"client-pod",
@@ -500,6 +532,24 @@ var _ = Describe("Network Segmentation", feature.NetworkSegmentation, func() {
 							topology: "layer2",
 							cidr:     joinCIDRs(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
 							role:     "primary",
+						},
+						*podConfig(
+							"udn-pod",
+							withCommand(func() []string {
+								return httpServerContainerCmd(podClusterNetPort)
+							}),
+						),
+					),
+					Entry(
+						"with L2 primary UDN with custom network",
+						&networkAttachmentConfigParams{
+							name:              nadName,
+							topology:          "layer2",
+							cidr:              joinStrings(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
+							role:              "primary",
+							defaultGatewayIPs: joinStrings(customL2IPv4Gateway, customL2IPv6Gateway),
+							reservedCIDRs:     joinStrings(customL2IPv4ReservedCIDR, customL2IPv6ReservedCIDR),
+							infraCIDRs:        joinStrings(customL2IPv4InfraCIDR, customL2IPv6InfraCIDR),
 						},
 						*podConfig(
 							"udn-pod",
@@ -862,6 +912,15 @@ var _ = Describe("Network Segmentation", feature.NetworkSegmentation, func() {
 					topology: "layer2",
 					cidr:     joinCIDRs(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
 					role:     "primary",
+				}),
+				ginkgo.Entry("with primary layer2 UDN with custom network", networkAttachmentConfigParams{
+					name:              nadName,
+					topology:          "layer2",
+					cidr:              joinStrings(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
+					role:              "primary",
+					defaultGatewayIPs: joinStrings(customL2IPv4Gateway, customL2IPv6Gateway),
+					reservedCIDRs:     joinStrings(customL2IPv4ReservedCIDR, customL2IPv6ReservedCIDR),
+					infraCIDRs:        joinStrings(customL2IPv4InfraCIDR, customL2IPv6InfraCIDR),
 				}),
 			)
 			DescribeTable("should be able to receive multicast IGMP query", func(netConfigParams networkAttachmentConfigParams) {
@@ -1542,6 +1601,18 @@ spec:
 						},
 						*podConfig("client-pod"),
 					),
+					Entry("by one pod over a layer2 network with custom network",
+						&networkAttachmentConfigParams{
+							name:              userDefinedNetworkName,
+							topology:          "layer2",
+							cidr:              joinStrings(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
+							role:              "primary",
+							defaultGatewayIPs: joinStrings(customL2IPv4Gateway, customL2IPv6Gateway),
+							reservedCIDRs:     joinStrings(customL2IPv4ReservedCIDR, customL2IPv6ReservedCIDR),
+							infraCIDRs:        joinStrings(customL2IPv4InfraCIDR, customL2IPv6InfraCIDR),
+						},
+						*podConfig("client-pod"),
+					),
 					Entry("by one pod over a layer3 network",
 						&networkAttachmentConfigParams{
 							name:     userDefinedNetworkName,
@@ -1806,6 +1877,27 @@ spec:
 					}),
 				),
 			),
+			Entry(
+				"L2 with custom network",
+				networkAttachmentConfigParams{
+					name:              nadName,
+					topology:          "layer2",
+					cidr:              joinStrings(userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
+					role:              "primary",
+					defaultGatewayIPs: joinStrings(customL2IPv4Gateway, customL2IPv6Gateway),
+					reservedCIDRs:     joinStrings(customL2IPv4ReservedCIDR, customL2IPv6ReservedCIDR),
+					infraCIDRs:        joinStrings(customL2IPv4InfraCIDR, customL2IPv6InfraCIDR),
+				},
+				*podConfig(
+					"client-pod",
+				),
+				*podConfig(
+					"server-pod",
+					withCommand(func() []string {
+						return httpServerContainerCmd(podClusterNetPort)
+					}),
+				),
+			),
 		)
 	})
 })
@@ -1835,8 +1927,22 @@ spec:
   topology: ` + nadToUdnParams[params.topology] + `
   ` + params.topology + `: 
     role: ` + nadToUdnParams[params.role] + `
-    subnets: ` + subnets + `
-`
+    subnets: ` + subnets + ``
+	if params.topology == "layer2" && params.role == "primary" {
+		if len(params.reservedCIDRs) > 0 {
+			manifest += `
+    reservedSubnets: [` + params.reservedCIDRs + `]`
+		}
+		if len(params.infraCIDRs) > 0 {
+			manifest += `
+    infrastructureSubnets: [` + params.infraCIDRs + `]`
+		}
+		if len(params.defaultGatewayIPs) > 0 {
+			manifest += `
+    defaultGatewayIPs: [` + params.defaultGatewayIPs + `]`
+		}
+	}
+	return manifest
 }
 
 func generateClusterUserDefinedNetworkManifest(params *networkAttachmentConfigParams) string {
@@ -1856,8 +1962,24 @@ spec:
     topology: ` + nadToUdnParams[params.topology] + `
     ` + params.topology + `: 
       role: ` + nadToUdnParams[params.role] + `
-      subnets: ` + subnets + `
-`
+      subnets: ` + subnets + ``
+
+	if params.topology == "layer2" && params.role == "primary" {
+		if len(params.reservedCIDRs) > 0 {
+			manifest += `
+      reservedSubnets: [` + params.reservedCIDRs + `]`
+		}
+		if len(params.infraCIDRs) > 0 {
+			manifest += `
+      infrastructureSubnets: [` + params.infraCIDRs + `]`
+		}
+		if len(params.defaultGatewayIPs) > 0 {
+			manifest += `
+      defaultGatewayIPs: [` + params.defaultGatewayIPs + `]`
+		}
+	}
+
+	return manifest
 }
 
 func generateSubnetsYaml(params *networkAttachmentConfigParams) string {

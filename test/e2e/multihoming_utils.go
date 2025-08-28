@@ -58,6 +58,29 @@ func filterCIDRs(cs clientset.Interface, cidrs ...string) []string {
 	return supportedCIDRs
 }
 
+func filterSupportedNetworkConfig(client clientset.Interface, config *networkAttachmentConfigParams) {
+	config.cidr = filterCIDRsAndJoin(client, config.cidr)
+	config.excludeCIDRs = filterCIDRs(client, config.excludeCIDRs...)
+	config.reservedCIDRs = filterCIDRsAndJoin(client, config.reservedCIDRs)
+	config.infraCIDRs = filterCIDRsAndJoin(client, config.infraCIDRs)
+	config.defaultGatewayIPs = filterIPsAndJoin(client, config.defaultGatewayIPs)
+}
+
+func filterIPs(cs clientset.Interface, ips ...string) []string {
+	var supportedIPs []string
+	for _, ip := range ips {
+		isIPv6 := utilnet.IsIPv6String(ip)
+		if (!isIPv6 && isIPv4Supported(cs)) || (isIPv6 && isIPv6Supported(cs)) {
+			supportedIPs = append(supportedIPs, ip)
+		}
+	}
+	return supportedIPs
+}
+
+func filterIPsAndJoin(cs clientset.Interface, ips string) string {
+	return joinStrings(filterIPs(cs,  strings.Split(ips, ",")...)...)
+}
+
 func getNetCIDRSubnet(netCIDR string) (string, error) {
 	subStrings := strings.Split(netCIDR, "/")
 	if len(subStrings) == 3 {
@@ -71,6 +94,9 @@ func getNetCIDRSubnet(netCIDR string) (string, error) {
 type networkAttachmentConfigParams struct {
 	cidr                string
 	excludeCIDRs        []string
+	infraCIDRs          string
+	defaultGatewayIPs   string
+	reservedCIDRs       string
 	namespace           string
 	name                string
 	topology            string
@@ -126,6 +152,9 @@ func generateNADSpec(config networkAttachmentConfig) string {
 		config.topology,
 		config.cidr,
 		strings.Join(config.excludeCIDRs, ","),
+		config.reservedCIDRs,
+		config.infraCIDRs,
+		config.defaultGatewayIPs,
 		config.mtu,
 		namespacedName(config.namespace, config.name),
 		config.vlanID,
