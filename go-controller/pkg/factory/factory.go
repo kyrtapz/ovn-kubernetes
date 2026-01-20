@@ -534,6 +534,11 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 		wf.raFactory = routeadvertisementsinformerfactory.NewSharedInformerFactory(ovnClientset.RouteAdvertisementsClient, resyncInterval)
 		// make sure shared informer is created for a factory, so on wf.raFactory.Start() it is initialized and caches are synced.
 		wf.raFactory.K8s().V1().RouteAdvertisements().Informer()
+
+		// Initialize VTEP factory for EVPN support.
+		wf.vtepFactory = vtepinformerfactory.NewSharedInformerFactory(ovnClientset.VTEPClient, resyncInterval)
+		// make sure shared informer is created for a factory, so on wf.vtepFactory.Start() it is initialized and caches are synced.
+		wf.vtepFactory.K8s().V1().VTEPs().Informer()
 	}
 
 	if config.OVNKubernetesFeature.EnableNetworkQoS {
@@ -907,6 +912,10 @@ func NewNodeWatchFactory(ovnClientset *util.OVNNodeClientset, nodeName string) (
 		if err != nil {
 			return nil, err
 		}
+
+		// Initialize VTEP factory for EVPN support on nodes.
+		wf.vtepFactory = vtepinformerfactory.NewSharedInformerFactory(ovnClientset.VTEPClient, resyncInterval)
+		wf.vtepFactory.K8s().V1().VTEPs().Informer()
 	}
 
 	return wf, nil

@@ -58,6 +58,19 @@ type NetLinkOps interface {
 	LinkSetVfHardwareAddr(pfLink netlink.Link, vfIndex int, hwaddr net.HardwareAddr) error
 	RouteSubscribeWithOptions(ch chan<- netlink.RouteUpdate, done <-chan struct{}, options netlink.RouteSubscribeOptions) error
 	LinkSubscribeWithOptions(ch chan<- netlink.LinkUpdate, done <-chan struct{}, options netlink.LinkSubscribeOptions) error
+	// Bridge port operations
+	LinkSetLearning(link netlink.Link, mode bool) error
+	LinkSetBrNeighSuppress(link netlink.Link, mode bool) error
+	LinkSetVlanTunnel(link netlink.Link, mode bool) error
+	LinkGetProtinfo(link netlink.Link) (netlink.Protinfo, error)
+	// Bridge VLAN operations
+	BridgeVlanAdd(link netlink.Link, vid uint16, pvid, untagged, self, master bool) error
+	BridgeVlanDel(link netlink.Link, vid uint16, pvid, untagged, self, master bool) error
+	BridgeVlanAddTunnelInfo(link netlink.Link, vid uint16, tunid uint32, self, master bool) error
+	BridgeVlanDelTunnelInfo(link netlink.Link, vid uint16, tunid uint32, self, master bool) error
+	// Bridge VNI operations
+	BridgeVniAdd(link netlink.Link, vni uint32) error
+	BridgeVniDel(link netlink.Link, vni uint32) error
 }
 
 type defaultNetLinkOps struct {
@@ -815,6 +828,46 @@ func GetIPFamily(v6 bool) int {
 
 func (defaultNetLinkOps) LinkSetVfHardwareAddr(pfLink netlink.Link, vfIndex int, hwaddr net.HardwareAddr) error {
 	return netlink.LinkSetVfHardwareAddr(pfLink, vfIndex, hwaddr)
+}
+
+func (defaultNetLinkOps) LinkSetLearning(link netlink.Link, mode bool) error {
+	return netlink.LinkSetLearning(link, mode)
+}
+
+func (defaultNetLinkOps) LinkSetBrNeighSuppress(link netlink.Link, mode bool) error {
+	return netlink.LinkSetBrNeighSuppress(link, mode)
+}
+
+func (defaultNetLinkOps) LinkSetVlanTunnel(link netlink.Link, mode bool) error {
+	return netlink.LinkSetVlanTunnel(link, mode)
+}
+
+func (defaultNetLinkOps) LinkGetProtinfo(link netlink.Link) (netlink.Protinfo, error) {
+	return netlink.LinkGetProtinfo(link)
+}
+
+func (defaultNetLinkOps) BridgeVlanAdd(link netlink.Link, vid uint16, pvid, untagged, self, master bool) error {
+	return netlink.BridgeVlanAdd(link, vid, pvid, untagged, self, master)
+}
+
+func (defaultNetLinkOps) BridgeVlanDel(link netlink.Link, vid uint16, pvid, untagged, self, master bool) error {
+	return netlink.BridgeVlanDel(link, vid, pvid, untagged, self, master)
+}
+
+func (defaultNetLinkOps) BridgeVlanAddTunnelInfo(link netlink.Link, vid uint16, tunid uint32, self, master bool) error {
+	return netlink.BridgeVlanAddTunnelInfo(link, vid, tunid, self, master)
+}
+
+func (defaultNetLinkOps) BridgeVlanDelTunnelInfo(link netlink.Link, vid uint16, tunid uint32, self, master bool) error {
+	return netlink.BridgeVlanDelTunnelInfo(link, vid, tunid, self, master)
+}
+
+func (defaultNetLinkOps) BridgeVniAdd(link netlink.Link, vni uint32) error {
+	return netlink.BridgeVniAdd(link, vni)
+}
+
+func (defaultNetLinkOps) BridgeVniDel(link netlink.Link, vni uint32) error {
+	return netlink.BridgeVniDel(link, vni)
 }
 
 func findUsableInterfaceForNetwork(ipAddr net.IP) (*net.Interface, error) {

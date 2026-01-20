@@ -722,6 +722,160 @@ func (_m *NetLinkOps) RuleAdd(rule *netlink.Rule) error {
 	return r0
 }
 
+// LinkSetLearning provides a mock function with given fields: link, mode
+func (_m *NetLinkOps) LinkSetLearning(link netlink.Link, mode bool) error {
+	ret := _m.Called(link, mode)
+
+	if len(ret) == 0 {
+		panic("no return value specified for LinkSetLearning")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(netlink.Link, bool) error); ok {
+		r0 = rf(link, mode)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// LinkSetBrNeighSuppress provides a mock function with given fields: link, mode
+func (_m *NetLinkOps) LinkSetBrNeighSuppress(link netlink.Link, mode bool) error {
+	ret := _m.Called(link, mode)
+
+	if len(ret) == 0 {
+		panic("no return value specified for LinkSetBrNeighSuppress")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(netlink.Link, bool) error); ok {
+		r0 = rf(link, mode)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// LinkSetVlanTunnel provides a mock function with given fields: link, mode
+func (_m *NetLinkOps) LinkSetVlanTunnel(link netlink.Link, mode bool) error {
+	ret := _m.Called(link, mode)
+
+	if len(ret) == 0 {
+		panic("no return value specified for LinkSetVlanTunnel")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(netlink.Link, bool) error); ok {
+		r0 = rf(link, mode)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// LinkGetProtinfo provides a mock function with given fields: link
+func (_m *NetLinkOps) LinkGetProtinfo(link netlink.Link) (netlink.Protinfo, error) {
+	ret := _m.Called(link)
+
+	if len(ret) == 0 {
+		panic("no return value specified for LinkGetProtinfo")
+	}
+
+	var r0 netlink.Protinfo
+	var r1 error
+	if rf, ok := ret.Get(0).(func(netlink.Link) (netlink.Protinfo, error)); ok {
+		return rf(link)
+	}
+	if rf, ok := ret.Get(0).(func(netlink.Link) netlink.Protinfo); ok {
+		r0 = rf(link)
+	} else {
+		r0 = ret.Get(0).(netlink.Protinfo)
+	}
+
+	if rf, ok := ret.Get(1).(func(netlink.Link) error); ok {
+		r1 = rf(link)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// BridgeVlanAdd provides a mock function with given fields: link, vid, pvid, untagged, self, master
+func (_m *NetLinkOps) BridgeVlanAdd(link netlink.Link, vid uint16, pvid bool, untagged bool, self bool, master bool) error {
+	ret := _m.Called(link, vid, pvid, untagged, self, master)
+
+	if len(ret) == 0 {
+		panic("no return value specified for BridgeVlanAdd")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(netlink.Link, uint16, bool, bool, bool, bool) error); ok {
+		r0 = rf(link, vid, pvid, untagged, self, master)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// BridgeVlanDel provides a mock function with given fields: link, vid, pvid, untagged, self, master
+func (_m *NetLinkOps) BridgeVlanDel(link netlink.Link, vid uint16, pvid bool, untagged bool, self bool, master bool) error {
+	ret := _m.Called(link, vid, pvid, untagged, self, master)
+
+	if len(ret) == 0 {
+		panic("no return value specified for BridgeVlanDel")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(netlink.Link, uint16, bool, bool, bool, bool) error); ok {
+		r0 = rf(link, vid, pvid, untagged, self, master)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// BridgeVlanAddTunnelInfo provides a mock function with given fields: link, vid, tunid, self, master
+func (_m *NetLinkOps) BridgeVlanAddTunnelInfo(link netlink.Link, vid uint16, tunid uint32, self bool, master bool) error {
+	ret := _m.Called(link, vid, tunid, self, master)
+
+	if len(ret) == 0 {
+		panic("no return value specified for BridgeVlanAddTunnelInfo")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(netlink.Link, uint16, uint32, bool, bool) error); ok {
+		r0 = rf(link, vid, tunid, self, master)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// BridgeVlanDelTunnelInfo provides a mock function with given fields: link, vid, tunid, self, master
+func (_m *NetLinkOps) BridgeVlanDelTunnelInfo(link netlink.Link, vid uint16, tunid uint32, self bool, master bool) error {
+	ret := _m.Called(link, vid, tunid, self, master)
+
+	if len(ret) == 0 {
+		panic("no return value specified for BridgeVlanDelTunnelInfo")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(netlink.Link, uint16, uint32, bool, bool) error); ok {
+		r0 = rf(link, vid, tunid, self, master)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // NewNetLinkOps creates a new instance of NetLinkOps. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewNetLinkOps(t interface {
