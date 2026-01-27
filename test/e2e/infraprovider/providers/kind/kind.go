@@ -837,6 +837,9 @@ func getNetworkInterface(containerName, networkName string) (api.NetworkInterfac
 		return ni, err
 	}
 	ni.IPv6, err = getContainerNetwork(inspectNetworkIPv6AddrKeyStr)
+	if ni.IPv6 == "invalid IP" {
+		ni.IPv6 = ""
+	}
 	if err != nil {
 		return ni, err
 	}

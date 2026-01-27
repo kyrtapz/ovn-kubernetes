@@ -564,7 +564,7 @@ func (oc *Layer2UserDefinedNetworkController) init() error {
 	excludeSubnets := oc.ExcludeSubnets()
 	excludeSubnets = append(excludeSubnets, oc.InfrastructureSubnets()...)
 
-	_, err = oc.initializeLogicalSwitch(
+	logicalSwitch, err := oc.initializeLogicalSwitch(
 		oc.GetNetworkScopedSwitchName(types.OVNLayer2Switch),
 		oc.Subnets(),
 		excludeSubnets,
@@ -574,6 +574,23 @@ func (oc *Layer2UserDefinedNetworkController) init() error {
 	)
 	if err != nil {
 		return err
+	}
+
+	if oc.EVPNMACVRFVNI() > 0 {
+		klog.Infof("Creating EVPN port %s on switch %s for network %s", oc.GetNetworkScopedName(types.OVNEVPNPort), logicalSwitch.Name, oc.GetNetworkName())
+		logicalSwitchPort := nbdb.LogicalSwitchPort{
+			Name:       oc.GetNetworkScopedName(types.OVNEVPNPort),
+			Addresses: []string{"unknown"},
+			ExternalIDs: map[string]string{
+				types.NetworkExternalID:  oc.GetNetworkName(),
+				types.TopologyExternalID: oc.TopologyType(),
+			},
+		}
+
+		if err := libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitch(oc.nbClient, logicalSwitch, &logicalSwitchPort); err != nil {
+			return fmt.Errorf("failed to add EVPN port %s to switch %s: %w", oc.GetNetworkScopedName(types.OVNEVPNPort), logicalSwitch.Name, err)
+		}
+
 	}
 
 	// Configure cluster port groups and multicast default policies for user defined primary networks.

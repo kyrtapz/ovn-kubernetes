@@ -177,5 +177,6 @@ require (
 replace (
 	github.com/coreos/go-iptables => github.com/trozet/go-iptables v0.0.0-20240328221912-077e672b3808
 	github.com/ovn-org/ovn-kubernetes/go-controller => ../../go-controller
+	github.com/vishvananda/netlink => github.com/kyrtapz/netlink v0.0.0-20260123110202-c8d8e5bdb25e
 	go.universe.tf/metallb => github.com/metallb/metallb v0.14.9
 )

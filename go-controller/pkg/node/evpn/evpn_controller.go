@@ -25,6 +25,7 @@ import (
 	vteplisters "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/vtep/v1/apis/listers/vtep/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/networkmanager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
@@ -1083,13 +1084,15 @@ func (c *Controller) setupOVSPort(networkName, vtepName string, vid int) error {
 	portName := formatDeviceName("evpn-", networkName)
 	bridgeName := formatDeviceName(bridgePrefix, vtepName)
 
-	klog.V(4).Infof("EVPN controller: setting up OVS port %s for network %q, VID %d", portName, networkName, vid)
+	// The iface-id must match the OVN logical switch port name created by the layer2 controller
+	ifaceID := fmt.Sprintf("%s%s",util.GetUserDefinedNetworkPrefix(networkName), types.OVNEVPNPort)
+	klog.V(4).Infof("EVPN controller: setting up OVS port %s (iface-id: %s) for network %q, VID %d", portName, ifaceID, networkName, vid)
 
 	// Create OVS internal port on br-int
 	stdout, stderr, err := util.RunOVSVsctl(
 		"--may-exist", "add-port", "br-int", portName,
 		"--", "set", "interface", portName, "type=internal",
-		fmt.Sprintf("external-ids:iface-id=%s", portName),
+		fmt.Sprintf("external-ids:iface-id=%s", ifaceID),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create OVS port %s: %v (stdout: %s, stderr: %s)", portName, err, stdout, stderr)

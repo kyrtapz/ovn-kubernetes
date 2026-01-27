@@ -2719,6 +2719,7 @@ func createNamespaceWithPrimaryNetworkOfType(
 		// EVPN uses same labels as VRFLite but no targetVRF
 		networkLabels = map[string]string{"advertise": name}
 		frrConfigurationLabels = map[string]string{"network": name}
+		targetVRF = name
 	}
 
 	namespace := &corev1.Namespace{

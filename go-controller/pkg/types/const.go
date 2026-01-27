@@ -60,6 +60,10 @@ const (
 	// types.OVNLocalnetPort is the name of localnet topology localnet port
 	OVNLocalnetPort = "ovn_localnet_port"
 
+	// OVNEVPNPort is the name suffix for EVPN MAC-VRF port on the logical switch
+	// This port connects the OVN logical switch to the Linux EVPN bridge via an OVS internal port
+	OVNEVPNPort = "evpn_port"
+
 	TransitSwitch               = "transit_switch"
 	TransitSwitchToRouterPrefix = "tstor-"
 	RouterToTransitSwitchPrefix = "rtots-"
