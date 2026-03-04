@@ -1142,7 +1142,7 @@ var _ = ginkgo.Describe("e2e network policy hairpinning validation", func() {
 		svcIP, err := createServiceForPodsWithLabel(f, namespaceName, serviceHTTPPort, endpointHTTPPort, "ClusterIP", hairpinPodSel)
 		framework.ExpectNoError(err, fmt.Sprintf("unable to create ClusterIP svc: %v", err))
 
-		err = framework.WaitForServiceEndpointsNum(context.TODO(), f.ClientSet, namespaceName, "service-for-pods", 1, time.Second, wait.ForeverTestTimeout)
+		err = e2eendpointslice.WaitForEndpointCount(context.TODO(), f.ClientSet, namespaceName, "service-for-pods", 1)
 		framework.ExpectNoError(err, fmt.Sprintf("ClusterIP svc never had an endpoint, expected 1: %v", err))
 
 		ginkgo.By("verify hairpinned connection from a pod to its own service is allowed")
@@ -1255,7 +1255,7 @@ var _ = ginkgo.Describe("e2e ingress traffic validation", func() {
 			if isDualStack {
 				expectedEndpointsNum = expectedEndpointsNum * 2
 			}
-			err = framework.WaitForServiceEndpointsNum(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum, time.Second, wait.ForeverTestTimeout)
+			err = e2eendpointslice.WaitForEndpointCount(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum)
 			framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, f.Namespace.Name)
 
 			for _, protocol := range []string{"http", "udp"} {
@@ -1330,7 +1330,7 @@ var _ = ginkgo.Describe("e2e ingress traffic validation", func() {
 			framework.ExpectNoError(err)
 
 			ginkgo.By("Waiting for the endpoints to pop up")
-			err = framework.WaitForServiceEndpointsNum(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, len(endPoints), time.Second, wait.ForeverTestTimeout)
+			err = e2eendpointslice.WaitForEndpointCount(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, len(endPoints))
 			framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, f.Namespace.Name)
 
 			ginkgo.By("Collecting IPv4 and IPv6 node addresses")
@@ -1455,7 +1455,7 @@ var _ = ginkgo.Describe("e2e ingress traffic validation", func() {
 			if isDualStack {
 				expectedEndpointsNum = expectedEndpointsNum * 2
 			}
-			err = framework.WaitForServiceEndpointsNum(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum, time.Second, wait.ForeverTestTimeout)
+			err = e2eendpointslice.WaitForEndpointCount(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum)
 			framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, f.Namespace.Name)
 
 			for _, protocol := range []string{"http", "udp"} {
@@ -1543,7 +1543,7 @@ var _ = ginkgo.Describe("e2e ingress traffic validation", func() {
 			if isDualStack {
 				expectedEndpointsNum = expectedEndpointsNum * 2
 			}
-			err = framework.WaitForServiceEndpointsNum(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum, time.Second, wait.ForeverTestTimeout)
+			err = e2eendpointslice.WaitForEndpointCount(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum)
 			framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, f.Namespace.Name)
 
 			for _, externalAddress := range addresses {
@@ -1694,7 +1694,7 @@ var _ = ginkgo.Describe("e2e ingress traffic validation", func() {
 			if isDualStack {
 				expectedEndpointsNum = expectedEndpointsNum * 2
 			}
-			err = framework.WaitForServiceEndpointsNum(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum, time.Second, wait.ForeverTestTimeout)
+			err = e2eendpointslice.WaitForEndpointCount(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum)
 			framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, f.Namespace.Name)
 
 			for _, protocol := range []string{"http", "udp"} {
@@ -1831,7 +1831,7 @@ var _ = ginkgo.Describe("e2e ingress to host-networked pods traffic validation",
 			if isDualStack {
 				expectedEndpointsNum = expectedEndpointsNum * 2
 			}
-			err = framework.WaitForServiceEndpointsNum(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum, time.Second, wait.ForeverTestTimeout)
+			err = e2eendpointslice.WaitForEndpointCount(context.TODO(), f.ClientSet, f.Namespace.Name, serviceName, expectedEndpointsNum)
 			framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, f.Namespace.Name)
 
 			for _, protocol := range []string{"http", "udp"} {
