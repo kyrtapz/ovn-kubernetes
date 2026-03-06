@@ -1,4 +1,4 @@
-module github.com/ovn-org/ovn-kubernetes/go-controller
+module github.com/ovn-kubernetes/ovn-kubernetes/go-controller
 
 go 1.25.0
 
@@ -36,7 +36,7 @@ require (
 	github.com/onsi/gomega v1.38.2
 	github.com/openshift/api v0.0.0-20260209232644-126cbbe24427
 	github.com/openshift/client-go v0.0.0-20260108185524-48f4ccfc4e13
-	github.com/ovn-kubernetes/libovsdb v0.8.1
+	github.com/ovn-kubernetes/libovsdb v0.8.2-0.20260302130604-c07ce22366ac
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/safchain/ethtool v0.3.1-0.20231027162144-83e5e0097c91
@@ -79,7 +79,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/cenkalti/hub v1.0.2 // indirect
-	github.com/cenkalti/rpc2 v1.0.4 // indirect
+	github.com/cenkalti/rpc2 v1.0.5 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/cgroups v1.1.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.6 // indirect
@@ -87,14 +87,14 @@ require (
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.10 // indirect
 	github.com/go-jose/go-jose/v4 v4.0.4 // indirect
 	github.com/go-openapi/jsonpointer v0.21.1 // indirect
 	github.com/go-openapi/jsonreference v0.21.0 // indirect
 	github.com/go-openapi/swag v0.23.1 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/go-playground/validator/v10 v10.26.0 // indirect
+	github.com/go-playground/validator/v10 v10.28.0 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
@@ -106,8 +106,7 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/josharian/native v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/juju/errors v0.0.0-20200330140219-3fe23663418f // indirect
-	github.com/juju/testing v0.0.0-20200706033705-4c23f9c453cd // indirect
+	github.com/juju/errors v1.0.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/mdlayher/ethernet v0.0.0-20220221185849-529eae5b6118 // indirect

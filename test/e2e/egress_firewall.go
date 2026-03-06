@@ -211,13 +211,14 @@ func egressFirewallPolicyValidationTests(useUDN bool, udnTopology string) {
 			}
 
 			checkExternalContainerConnectivity := func(externalContainer infraapi.ExternalContainer, dstIP string, dstPort int) {
-				_, err := infraprovider.Get().ExecExternalContainerCommand(externalContainer, []string{
-					"curl", "-s", "--connect-timeout", fmt.Sprint(testTimeout), net.JoinHostPort(dstIP, fmt.Sprint(dstPort)),
-				})
-				if err != nil {
-					framework.Failf("Failed to connect from external container %s to %s:%d: %v",
-						externalContainer.GetName(), dstIP, dstPort, err)
-				}
+				gomega.Eventually(func() error {
+					_, err := infraprovider.Get().ExecExternalContainerCommand(externalContainer, []string{
+						"curl", "-s", "--connect-timeout", fmt.Sprint(time.Second), net.JoinHostPort(dstIP, fmt.Sprint(dstPort)),
+					})
+					return err
+				}, time.Duration(2*testTimeout)*time.Second).Should(gomega.Succeed(),
+					fmt.Sprintf("Failed to connect from external container %s to %s:%d",
+						externalContainer.GetName(), dstIP, dstPort))
 			}
 
 			// createSrcPodWithRetry creates a pod that can reach the specified destination with a given number of retries.
