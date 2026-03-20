@@ -276,19 +276,19 @@ func CleanUpLiveMigratablePod(nbClient libovsdbclient.Client, watchFactory *fact
 	return nil
 }
 
-func SyncVirtualMachines(nbClient libovsdbclient.Client, vms map[ktypes.NamespacedName]bool) error {
+func SyncVirtualMachines(nbClient libovsdbclient.Client, vms map[ktypes.NamespacedName]bool, controllerName string) error {
 	if err := libovsdbops.DeleteLogicalRouterStaticRoutesWithPredicate(nbClient, ovntypes.OVNClusterRouter, func(item *nbdb.LogicalRouterStaticRoute) bool {
-		return ownsItAndIsOrphanOrWrongZone(item.ExternalIDs, vms)
+		return ownsItAndIsOrphanOrWrongZone(item.ExternalIDs, vms, controllerName)
 	}); err != nil {
 		return fmt.Errorf("failed deleting stale vm static routes: %v", err)
 	}
 	if err := libovsdbops.DeleteLogicalRouterPoliciesWithPredicate(nbClient, ovntypes.OVNClusterRouter, func(item *nbdb.LogicalRouterPolicy) bool {
-		return ownsItAndIsOrphanOrWrongZone(item.ExternalIDs, vms)
+		return ownsItAndIsOrphanOrWrongZone(item.ExternalIDs, vms, controllerName)
 	}); err != nil {
 		return fmt.Errorf("failed deleting stale vm policies: %v", err)
 	}
 	if err := libovsdbops.DeleteDHCPOptionsWithPredicate(nbClient, func(item *nbdb.DHCPOptions) bool {
-		return ownsItAndIsOrphanOrWrongZone(item.ExternalIDs, vms)
+		return ownsItAndIsOrphanOrWrongZone(item.ExternalIDs, vms, controllerName)
 	}); err != nil {
 		return fmt.Errorf("failed deleting stale dhcp options: %v", err)
 	}
@@ -464,13 +464,17 @@ func (lm LiveMigrationStatus) IsTargetDomainReady() bool {
 //
 // Note: The function assumes that the pod is part of a VirtualMachine resource managed
 // by KubeVirt.
-func DiscoverLiveMigrationStatus(client *factory.WatchFactory, pod *corev1.Pod) (*LiveMigrationStatus, error) {
+func DiscoverLiveMigrationStatus(podLister v1.PodLister, pod *corev1.Pod) (*LiveMigrationStatus, error) {
 	vmKey := ExtractVMNameFromPod(pod)
 	if vmKey == nil {
 		return nil, nil
 	}
 
-	vmPods, err := client.GetPodsBySelector(pod.Namespace, metav1.LabelSelector{MatchLabels: map[string]string{kubevirtv1.VirtualMachineNameLabel: vmKey.Name}})
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{kubevirtv1.VirtualMachineNameLabel: vmKey.Name}})
+	if err != nil {
+		return nil, err
+	}
+	vmPods, err := podLister.Pods(pod.Namespace).List(selector)
 	if err != nil {
 		return nil, err
 	}
