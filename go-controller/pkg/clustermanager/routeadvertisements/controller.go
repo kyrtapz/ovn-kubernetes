@@ -732,19 +732,53 @@ func (c *Controller) generateFRRConfiguration(
 		}
 		matchedNetworks.Insert(matchedNetwork)
 
+		// Collect pod subnets from all selected no-overlay networks
+		var allNoOverlayPodSubnets []string
+		for _, networkName := range selectedNetworks.networks {
+			if selectedNetworks.networkTransport[networkName] == types.NetworkTransportNoOverlay {
+				// Get the pod subnets for this network (the network subnets, not host subnets)
+				if podSubnets := selectedNetworks.networkSubnets[networkName]; len(podSubnets) > 0 {
+					allNoOverlayPodSubnets = append(allNoOverlayPodSubnets, podSubnets...)
+				}
+			}
+		}
+
 		// if this router's VRF matches the target VRF, copy it and set the
 		// prefixes as appropriate
 		targetRouter := router
 		targetRouter.Prefixes = advertisePrefixes
+
+		// For managed FRRConfigurations, the base config lists all nodes as
+		// neighbors. When generating the per-node FRRConfiguration, we need
+		// to exclude the node itself from its own neighbor list to avoid
+		// self-peering. Look up the node's primary interface addresses so
+		// we can filter them out below.
+		node, err := c.nodeLister.Get(nodeName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+		}
+		nodeIfAddr, err := util.GetNodeIfAddrAnnotation(node)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get node %s primary interface address annotation: %w", nodeName, err)
+		}
+		// Strip CIDR mask to get bare IP strings for neighbor comparison.
+		nodeV4, _, _ := strings.Cut(nodeIfAddr.IPv4, "/")
+		nodeV6, _, _ := strings.Cut(nodeIfAddr.IPv6, "/")
+
 		targetRouter.Neighbors = make([]frrtypes.Neighbor, 0, len(source.Spec.BGP.Routers[i].Neighbors))
 		for _, neighbor := range source.Spec.BGP.Routers[i].Neighbors {
+			// Skip neighbors that are the node itself
+			if (nodeV4 != "" && neighbor.Address == nodeV4) || (nodeV6 != "" && neighbor.Address == nodeV6) {
+				continue
+			}
+
 			// If MultiProtocol is enabled (default) then a BGP session carries
 			// prefixes of both IPv4 and IPv6 families. Our problem is that with
 			// an IPv4 session, FRR can incorrectly pick the masquerade IPv6
 			// address (instead of the real address) as next hop for IPv6
 			// prefixes and that won't work. Note that with a dedicated IPv6
 			// session that can't happen since FRR will use the same address
-			// that was used to stablish the session. Let's enforce the use of
+			// that was used to establish the session. Let's enforce the use of
 			// DisableMP for now.
 			if !neighbor.DisableMP {
 				return nil, fmt.Errorf("%w: DisableMP==false not supported, seen on FRRConfiguration %s/%s neighbor %s",
@@ -770,25 +804,21 @@ func (c *Controller) generateFRRConfiguration(
 
 			// For no-overlay networks, add routes to pod subnets to the accepted routes list
 			// frr-k8s will merge the prefixes from both the generated and the base FRRConfiguration
-			if selectedNetworks.networkTransport[matchedNetwork] == types.NetworkTransportNoOverlay {
-				// Get the pod subnets for this network (the network subnets, not host subnets)
-				podSubnets := selectedNetworks.networkSubnets[matchedNetwork]
-				if len(podSubnets) > 0 {
-					// Filter pod subnets by IP family to match the neighbor
-					filteredPodSubnets := util.MatchAllIPNetsStringFamily(isIPV6, podSubnets)
-					if len(filteredPodSubnets) > 0 {
-						neighbor.ToReceive = frrtypes.Receive{
-							Allowed: frrtypes.AllowedInPrefixes{
-								Mode: frrtypes.AllowRestricted,
-							},
-						}
-						for _, subnet := range filteredPodSubnets {
-							neighbor.ToReceive.Allowed.Prefixes = append(neighbor.ToReceive.Allowed.Prefixes, frrtypes.PrefixSelector{
-								Prefix: subnet,
-								LE:     selectedNetworks.prefixLength[subnet],
-								GE:     selectedNetworks.prefixLength[subnet],
-							})
-						}
+			if len(allNoOverlayPodSubnets) > 0 {
+				// Filter pod subnets by IP family to match the neighbor
+				filteredPodSubnets := util.MatchAllIPNetsStringFamily(isIPV6, allNoOverlayPodSubnets)
+				if len(filteredPodSubnets) > 0 {
+					neighbor.ToReceive = frrtypes.Receive{
+						Allowed: frrtypes.AllowedInPrefixes{
+							Mode: frrtypes.AllowRestricted,
+						},
+					}
+					for _, subnet := range filteredPodSubnets {
+						neighbor.ToReceive.Allowed.Prefixes = append(neighbor.ToReceive.Allowed.Prefixes, frrtypes.PrefixSelector{
+							Prefix: subnet,
+							LE:     selectedNetworks.prefixLength[subnet],
+							GE:     selectedNetworks.prefixLength[subnet],
+						})
 					}
 				}
 			}

@@ -47,8 +47,6 @@ import (
 	utilerrors "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util/errors"
 )
 
-const DefaultNetworkControllerName = "default-network-controller"
-
 // DefaultNetworkController structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints) for default l3 network
 type DefaultNetworkController struct {
@@ -204,7 +202,7 @@ func newDefaultNetworkControllerCommon(
 		cnci.watchFactory.NodeCoreInformer().Lister(),
 		cnci.nbClient,
 		addressSetFactory,
-		DefaultNetworkControllerName,
+		types.DefaultNetworkControllerName,
 		cnci.zone,
 	)
 	if err != nil {
@@ -214,7 +212,7 @@ func newDefaultNetworkControllerCommon(
 	oc := &DefaultNetworkController{
 		BaseNetworkController: BaseNetworkController{
 			CommonNetworkControllerInfo: *cnci,
-			controllerName:              DefaultNetworkControllerName,
+			controllerName:              types.DefaultNetworkControllerName,
 			ReconcilableNetInfo:         defaultNetInfo,
 			lsManager:                   lsm.NewLogicalSwitchManager(),
 			logicalPortCache:            portCache,
@@ -978,6 +976,7 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 			if h.oc.isLocalZoneNode(oldNode) {
 				// determine what actually changed in this update
 				_, nodeSync := h.oc.addNodeFailed.Load(newNode.Name)
+				nodeSync = nodeSync || nodeSubnetChange
 				_, failed := h.oc.nodeClusterRouterPortFailed.Load(newNode.Name)
 				clusterRtrSync := failed || nodeChassisChanged(oldNode, newNode) || nodeSubnetChange
 				_, failed = h.oc.mgmtPortFailed.Load(newNode.Name)

@@ -16,6 +16,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/dnsnameresolver"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/egressservice"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/endpointslicemirror"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/managedbgp"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/networkconnect"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/nooverlay"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/routeadvertisements"
@@ -24,6 +25,7 @@ import (
 	udntemplate "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/userdefinednetwork/template"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	networkconnectclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/clusternetworkconnect/v1/apis/clientset/versioned"
+	rainformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/informers/externalversions/routeadvertisements/v1"
 	vtepinformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/vtep/v1/apis/informers/externalversions/vtep/v1"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kube"
@@ -40,6 +42,7 @@ import (
 type ClusterManager struct {
 	client                      clientset.Interface
 	defaultNetClusterController *networkClusterController
+	nodeController              *clusterManagerNodeController
 	zoneClusterController       *zoneClusterController
 	wf                          *factory.WatchFactory
 	udnClusterManager           *userDefinedNetworkClusterManager
@@ -65,8 +68,9 @@ type ClusterManager struct {
 	// networkManager creates and deletes network controllers
 	networkManager networkmanager.Controller
 
-	raController        *routeadvertisements.Controller
-	noOverlayController *nooverlay.Controller
+	raController         *routeadvertisements.Controller
+	noOverlayController  *nooverlay.Controller
+	managedBGPController *managedbgp.Controller
 }
 
 // NewClusterManager creates a new cluster manager to manage the cluster nodes.
@@ -78,7 +82,8 @@ func NewClusterManager(
 ) (*ClusterManager, error) {
 
 	wf = wf.ShallowClone()
-	defaultNetClusterController := newDefaultNetworkClusterController(&util.DefaultNetInfo{}, ovnClient, wf, recorder)
+	nodeController := newClusterManagerNodeController(wf)
+	defaultNetClusterController := newDefaultNetworkClusterController(&util.DefaultNetInfo{}, ovnClient, wf, recorder, nodeController)
 
 	zoneClusterController, err := newZoneClusterController(ovnClient, wf)
 	if err != nil {
@@ -88,6 +93,7 @@ func NewClusterManager(
 	cm := &ClusterManager{
 		client:                      ovnClient.KubeClient,
 		defaultNetClusterController: defaultNetClusterController,
+		nodeController:              nodeController,
 		zoneClusterController:       zoneClusterController,
 		wf:                          wf,
 		recorder:                    recorder,
@@ -112,7 +118,7 @@ func NewClusterManager(
 			return nil, err
 		}
 
-		cm.udnClusterManager, err = newUserDefinedNetworkClusterManager(ovnClient, wf, cm.networkManager.Interface(), recorder)
+		cm.udnClusterManager, err = newUserDefinedNetworkClusterManager(ovnClient, wf, cm.networkManager.Interface(), recorder, nodeController)
 		if err != nil {
 			return nil, err
 		}
@@ -167,6 +173,11 @@ func NewClusterManager(
 		if util.IsEVPNEnabled() {
 			vtepInformer = wf.VTEPInformer()
 		}
+		// RouteAdvertisements informer for no-overlay transport validation
+		var raInformer rainformer.RouteAdvertisementsInformer
+		if util.IsRouteAdvertisementsEnabled() {
+			raInformer = wf.RouteAdvertisementsInformer()
+		}
 		udnController := udncontroller.New(
 			ovnClient.NetworkAttchDefClient, wf.NADInformer(),
 			ovnClient.UserDefinedNetworkClient,
@@ -176,6 +187,7 @@ func NewClusterManager(
 			wf.PodCoreInformer(),
 			wf.NamespaceInformer(),
 			vtepInformer,
+			raInformer,
 			cm.recorder,
 		)
 		cm.userDefinedNetworkController = udnController
@@ -190,6 +202,9 @@ func NewClusterManager(
 
 	if util.IsRouteAdvertisementsEnabled() {
 		cm.raController = routeadvertisements.NewController(cm.networkManager.Interface(), wf, ovnClient)
+		if config.ManagedBGP.FRRNamespace != "" {
+			cm.managedBGPController = managedbgp.NewController(wf, ovnClient.FRRClient, ovnClient.RouteAdvertisementsClient, recorder)
+		}
 		if config.Default.Transport == types.NetworkTransportNoOverlay {
 			cm.noOverlayController = nooverlay.NewController(wf, recorder)
 		}
@@ -209,6 +224,10 @@ func (cm *ClusterManager) Start(ctx context.Context) error {
 
 	// Start networkManager before other controllers
 	if err := cm.networkManager.Start(); err != nil {
+		return err
+	}
+
+	if err := cm.nodeController.Start(); err != nil {
 		return err
 	}
 
@@ -260,6 +279,11 @@ func (cm *ClusterManager) Start(ctx context.Context) error {
 	}
 
 	if cm.raController != nil {
+		if cm.managedBGPController != nil {
+			if err := cm.managedBGPController.Start(); err != nil {
+				return err
+			}
+		}
 		err := cm.raController.Start()
 		if err != nil {
 			return err
@@ -303,6 +327,9 @@ func (cm *ClusterManager) Stop() {
 		cm.networkConnectController.Stop()
 	}
 	if cm.raController != nil {
+		if cm.managedBGPController != nil {
+			cm.managedBGPController.Stop()
+		}
 		cm.raController.Stop()
 		cm.raController = nil
 	}
@@ -310,6 +337,7 @@ func (cm *ClusterManager) Stop() {
 		cm.noOverlayController.Stop()
 		cm.noOverlayController = nil
 	}
+	cm.nodeController.Stop()
 }
 
 func (cm *ClusterManager) NewNetworkController(netInfo util.NetInfo) (networkmanager.NetworkController, error) {

@@ -22,6 +22,7 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
+	nodecontroller "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controllers/node"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/generator/udn"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kubevirt"
@@ -240,7 +241,7 @@ func (bsnc *BaseUserDefinedNetworkController) ensurePodForUserDefinedNetwork(pod
 	var err error
 
 	if kubevirt.IsPodAllowedForMigration(pod, bsnc.GetNetInfo()) {
-		kubevirtLiveMigrationStatus, err = kubevirt.DiscoverLiveMigrationStatus(bsnc.watchFactory, pod)
+		kubevirtLiveMigrationStatus, err = kubevirt.DiscoverLiveMigrationStatus(bsnc.watchFactory.PodCoreInformer().Lister(), pod)
 		if err != nil {
 			return fmt.Errorf("failed to discover Live-migration status: %w", err)
 		}
@@ -380,7 +381,10 @@ func (bsnc *BaseUserDefinedNetworkController) addLogicalPortToNetworkForNAD(pod 
 	}
 
 	if shouldHandleLiveMigration && kubevirtLiveMigrationStatus.IsTargetDomainReady() {
-		hasSourcePodLogicalPort := bsnc.isPodScheduledinLocalZone(kubevirtLiveMigrationStatus.SourcePod) || bsnc.isLayer2WithInterconnectTransport()
+		// We have a source pod LSP at this zone if the source pod and:
+		// - layer2 IC There is one at all the zones since we have the remote LSP to implement east/west
+		// - localnet only if this is the zone where the source pod is running
+		hasSourcePodLogicalPort := kubevirtLiveMigrationStatus.SourcePod != nil && (bsnc.isPodScheduledinLocalZone(kubevirtLiveMigrationStatus.SourcePod) || bsnc.isLayer2WithInterconnectTransport())
 		if hasSourcePodLogicalPort {
 			ops, err = bsnc.disableLiveMigrationSourceLSPOps(kubevirtLiveMigrationStatus, nadKey, ops)
 			if err != nil {
@@ -955,7 +959,7 @@ func (bsnc *BaseUserDefinedNetworkController) buildUDNEgressSNAT(localPodSubnets
 		// contains the node IPs in the cluster. Given that egressIP feature
 		// already has an address set containing these nodeIPs owned by the
 		// default network controller, let's re-use it.
-		nodeIPsASIDs := getEgressIPAddrSetDbIDs(NodeIPAddrSetName, types.DefaultNetworkName, DefaultNetworkControllerName)
+		nodeIPsASIDs := getEgressIPAddrSetDbIDs(NodeIPAddrSetName, types.DefaultNetworkName, types.DefaultNetworkControllerName)
 		nodeIPsAS, err = bsnc.addressSetFactory.GetAddressSet(nodeIPsASIDs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get address set with IDs %v: %w", nodeIPsASIDs, err)
@@ -1090,7 +1094,7 @@ func (bsnc *BaseUserDefinedNetworkController) disableLiveMigrationSourceLSPOps(
 }
 
 func (bsnc *BaseUserDefinedNetworkController) enableSourceLSPFailedLiveMigration(pod *corev1.Pod, nadKey string, mac string, ips []string) error {
-	kubevirtLiveMigrationStatus, err := kubevirt.DiscoverLiveMigrationStatus(bsnc.watchFactory, pod)
+	kubevirtLiveMigrationStatus, err := kubevirt.DiscoverLiveMigrationStatus(bsnc.watchFactory.PodCoreInformer().Lister(), pod)
 	if err != nil {
 		return fmt.Errorf("failed to discover Live-migration status after pod termination: %w", err)
 	}
@@ -1114,4 +1118,19 @@ func (bsnc *BaseUserDefinedNetworkController) enableSourceLSPFailedLiveMigration
 
 func shouldAddPort(oldPod, newPod *corev1.Pod, inRetryCache bool) bool {
 	return inRetryCache || util.PodScheduled(oldPod) != util.PodScheduled(newPod)
+}
+
+func nodesToInterfaces(nodes []*corev1.Node) []interface{} {
+	objs := make([]interface{}, 0, len(nodes))
+	for _, node := range nodes {
+		objs = append(objs, node)
+	}
+	return objs
+}
+
+func nodeSubnetChangedForUDN(oldNode, newNode *corev1.Node, netName string, oldState, newState *nodecontroller.NodeAnnotationState) bool {
+	if !util.NodeSubnetAnnotationChanged(oldNode, newNode) {
+		return false
+	}
+	return nodecontroller.NodeSubnetAnnotationChangedForNetworkWithState(oldState, newState, netName)
 }
