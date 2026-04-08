@@ -94,7 +94,7 @@ func (c *Controller) enqueueEndpointSlice(obj interface{}) {
 		}
 	}
 	if key := c.getDefaultEndpointSliceKey(eps); key != "" {
-		c.queue.AddRateLimited(key)
+		c.queue.Add(key)
 	}
 }
 
@@ -256,19 +256,8 @@ func (c *Controller) syncDefaultEndpointSlice(ctx context.Context, key string) e
 		return nil
 	}
 
-	klog.Infof("Processing %s/%s EndpointSlice in %q primary network", namespace, name, namespacePrimaryNetwork.GetNetworkName())
-
-	nadKey, err := c.networkManager.GetPrimaryNADForNamespace(namespace)
-	if err != nil {
-		return err
-	}
-	if nadKey == types.DefaultNetworkName {
-		return fmt.Errorf("no primary NAD found for namespace %s", namespace)
-	}
-	if networkName := c.networkManager.GetNetworkNameForNADKey(nadKey); networkName == "" || networkName != namespacePrimaryNetwork.GetNetworkName() {
-		return fmt.Errorf("primary NAD %s does not match network %s", nadKey, namespacePrimaryNetwork.GetNetworkName())
-	}
-
+	// Fetch the default and mirrored EndpointSlices first so we can do a cheap
+	// resource-version check before the more expensive NAD lookups.
 	defaultEndpointSlice, err := c.endpointSliceLister.EndpointSlices(namespace).Get(name)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
@@ -327,19 +316,48 @@ func (c *Controller) syncDefaultEndpointSlice(ctx context.Context, key string) e
 		}
 	}
 
+	// We have actual work to do — resolve the NAD for the primary network.
+	klog.Infof("Processing %s/%s EndpointSlice in %q primary network", namespace, name, namespacePrimaryNetwork.GetNetworkName())
+
+	nadKey, err := c.networkManager.GetPrimaryNADForNamespace(namespace)
+	if err != nil {
+		return err
+	}
+	if nadKey == types.DefaultNetworkName {
+		return fmt.Errorf("no primary NAD found for namespace %s", namespace)
+	}
+	if networkName := c.networkManager.GetNetworkNameForNADKey(nadKey); networkName == "" || networkName != namespacePrimaryNetwork.GetNetworkName() {
+		return fmt.Errorf("primary NAD %s does not match network %s", nadKey, namespacePrimaryNetwork.GetNetworkName())
+	}
+
+	mirrorStart := time.Now()
 	currentMirror, err := c.mirrorEndpointSlice(mirroredEndpointSlice, defaultEndpointSlice, namespacePrimaryNetwork, nadKey)
 	if err != nil {
 		return err
 	}
 
 	if !reflect.DeepEqual(currentMirror, mirroredEndpointSlice) {
+		svcName := defaultEndpointSlice.Labels[v1.LabelServiceName]
+		networkName := namespacePrimaryNetwork.GetNetworkName()
 		if currentMirror.Name == "" {
+			if len(currentMirror.Endpoints) == 0 {
+				klog.V(5).Infof("Skipping creation of empty mirrored EndpointSlice for: %s", cache.MetaObjectToName(defaultEndpointSlice))
+				return nil
+			}
 			klog.Infof("Creating the mirrored EndpointSlice for: %s", cache.MetaObjectToName(defaultEndpointSlice))
 			_, err := c.kubeClient.DiscoveryV1().EndpointSlices(namespace).Create(ctx, currentMirror, metav1.CreateOptions{})
+			if err == nil {
+				klog.Infof("Service setup step completed: step=ep_mirror_created service=%s/%s network=%s endpoints=%d elapsed_ms=%.1f",
+					namespace, svcName, networkName, len(currentMirror.Endpoints), float64(time.Since(mirrorStart).Microseconds())/1000.0)
+			}
 			return err
 		}
 		klog.Infof("Updating the mirrored EndpointSlice: %s for: %s", cache.MetaObjectToName(currentMirror), cache.MetaObjectToName(defaultEndpointSlice))
 		_, err := c.kubeClient.DiscoveryV1().EndpointSlices(namespace).Update(ctx, currentMirror, metav1.UpdateOptions{})
+		if err == nil {
+			klog.Infof("Service setup step completed: step=ep_mirror_updated service=%s/%s network=%s endpoints=%d elapsed_ms=%.1f",
+				namespace, svcName, networkName, len(currentMirror.Endpoints), float64(time.Since(mirrorStart).Microseconds())/1000.0)
+		}
 		return err
 	}
 	return nil

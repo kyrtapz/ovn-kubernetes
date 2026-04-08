@@ -232,7 +232,7 @@ build_ovn_image() {
     set_ovn_image
 
     # Build image
-    make -C ${DIR}/../dist/images IMAGE="${OVN_IMAGE}" OVN_REPO="${OVN_REPO}" OVN_GITREF="${OVN_GITREF}" OCI_BIN="${OCI_BIN}" fedora-image
+    make -C ${DIR}/../dist/images IMAGE="${OVN_IMAGE}" OVN_REPO="${OVN_REPO}" OVN_GITREF="${OVN_GITREF}" OVS_REPO="${OVS_REPO:-}" OVS_GITREF="${OVS_GITREF:-}" OCI_BIN="${OCI_BIN}" fedora-image
 
     # store in local registry
     if [ "$KIND_LOCAL_REGISTRY" == true ];then
