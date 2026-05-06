@@ -64,6 +64,8 @@ type GatewayManager struct {
 	routerLoadBalancerGroupUUID string
 
 	transitRouterInfo *transitRouterInfo
+
+	staleSNATsCleaned bool
 }
 
 type GatewayOption func(*GatewayManager)
@@ -937,8 +939,11 @@ func (gw *GatewayManager) updateGWRouterNAT(nodeName string, gwConfig *GatewayCo
 		}
 	}
 
-	if err = gw.cleanupStalePodSNATs(nodeName, gwConfig.annoConfig.IPAddresses, gwLRPIPs); err != nil {
-		return fmt.Errorf("failed to sync stale SNATs on node %s: %v", nodeName, err)
+	if !gw.staleSNATsCleaned {
+		if err = gw.cleanupStalePodSNATs(nodeName, gwConfig.annoConfig.IPAddresses, gwLRPIPs); err != nil {
+			return fmt.Errorf("failed to sync stale SNATs on node %s: %v", nodeName, err)
+		}
+		gw.staleSNATsCleaned = true
 	}
 	return nil
 }
