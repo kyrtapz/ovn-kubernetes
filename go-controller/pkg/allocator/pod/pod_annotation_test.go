@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	cnitypes "github.com/containernetworking/cni/pkg/types"
 	"github.com/google/go-cmp/cmp"
@@ -1343,6 +1344,10 @@ func Test_allocatePodAnnotationWithRollback(t *testing.T) {
 					g.Expect(podAnnotation.TunnelID).To(gomega.Equal(100), "Expected tunnel ID")
 				}
 				return
+			}
+			// AllocatedAt is set dynamically; zero it for comparison
+			if podAnnotation != nil {
+				podAnnotation.AllocatedAt = time.Time{}
 			}
 			g.Expect(podAnnotation).To(gomega.Equal(tt.wantPodAnnotation), "diff: %s", cmp.Diff(tt.wantPodAnnotation, podAnnotation))
 

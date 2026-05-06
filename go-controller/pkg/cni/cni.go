@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	current "github.com/containernetworking/cni/pkg/types/100"
 
@@ -167,12 +168,23 @@ func (pr *PodRequest) cmdAdd(kubeAuth *KubeAPIAuth, clientset *ClientSet, ovsCli
 			annotCondFn = isDPUReady(annotCondFn, pr.nadKey)
 		}
 	}
-
-	// Get the IP address and MAC address of the pod
-	// for DPU, ensure connection-details is present
+	annotWaitStart := time.Now()
 	pod, annotations, podNADAnnotation, err := GetPodWithAnnotations(pr.ctx, clientset, namespace, podName, pr.nadKey, annotCondFn)
+	annotWaitDuration := time.Since(annotWaitStart)
 	if err != nil {
+		klog.Warningf("Pod setup step failed: step=cni_annotation_ready pod=%s/%s network=%s annotation_wait_ms=%.1f err=%v",
+			namespace, podName, pr.netName, float64(annotWaitDuration.Microseconds())/1000.0, err)
 		return nil, fmt.Errorf("failed to get pod annotation: %v", err)
+	}
+	// Log cross-component latency: how long CNI waited for cluster-manager annotation
+	if podNADAnnotation != nil {
+		sinceAllocMsg := ""
+		if !podNADAnnotation.AllocatedAt.IsZero() {
+			sinceAlloc := time.Since(podNADAnnotation.AllocatedAt)
+			sinceAllocMsg = fmt.Sprintf(" since_annotation_ms=%.1f", float64(sinceAlloc.Microseconds())/1000.0)
+		}
+		klog.Infof("Pod setup step completed: step=cni_annotation_ready pod=%s/%s network=%s annotation_wait_ms=%.1f%s",
+			namespace, podName, pr.netName, float64(annotWaitDuration.Microseconds())/1000.0, sinceAllocMsg)
 	}
 
 	if err = pr.checkOrUpdatePodUID(pod); err != nil {

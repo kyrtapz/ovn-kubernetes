@@ -308,6 +308,7 @@ func (s *Server) handleCNIRequest(r *http.Request) (result []byte, err error) {
 		}
 	}()
 
+	cniStart := time.Now()
 	klog.Infof("%s %s starting CNI request", request, request.Command)
 	switch request.Command {
 	case CNIAdd:
@@ -340,6 +341,12 @@ func (s *Server) handleCNIRequest(r *http.Request) (result []byte, err error) {
 			// merge primary response into the original response
 			mergePrimaryUDNResponse(response, primaryResponse, primaryPodRequest)
 		}
+	}
+
+	if request.Command == CNIAdd {
+		cniDuration := time.Since(cniStart)
+		klog.Infof("Pod setup step completed: step=cni_complete pod=%s/%s network=%s elapsed_ms=%.1f",
+			request.PodNamespace, request.PodName, request.netName, float64(cniDuration.Microseconds())/1000.0)
 	}
 
 	if result, err = response.Marshal(); err != nil {
