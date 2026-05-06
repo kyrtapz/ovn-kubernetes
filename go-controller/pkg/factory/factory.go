@@ -268,6 +268,18 @@ func informerObjectTrim(obj interface{}) (interface{}, error) {
 	if accessor, err := meta.Accessor(obj); err == nil {
 		accessor.SetManagedFields(nil)
 	}
+	if node, ok := obj.(*corev1.Node); ok {
+		node.Status.Images = nil
+		node.Status.VolumesAttached = nil
+		node.Status.VolumesInUse = nil
+		node.Status.DaemonEndpoints = corev1.NodeDaemonEndpoints{}
+		node.Status.NodeInfo = corev1.NodeSystemInfo{}
+		node.Status.Capacity = nil
+		node.Status.Allocatable = nil
+		node.Spec.Taints = nil
+		node.Spec.ConfigSource = nil
+		node.OwnerReferences = nil
+	}
 	if pod, ok := obj.(*corev1.Pod); ok {
 		// OVN-K does not consume pod volumes from informer cache.
 		pod.Spec.Volumes = []corev1.Volume{}
