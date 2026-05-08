@@ -399,6 +399,14 @@ func allocatePodAnnotationWithRollback(
 		}
 	}()
 
+	if util.DoesNetworkRequireTunnelIDs(netInfo) {
+		if _, ok := pod.Annotations[types.OvnPodAnnotationName]; !ok {
+			klog.V(4).Infof("Default network annotation not set for pod %s/%s, deferring UDN allocation",
+				pod.Namespace, pod.Name)
+			return
+		}
+	}
+
 	podAnnotation, _ = util.UnmarshalPodAnnotation(pod.Annotations, nadKey)
 	isNetworkAllocated := podAnnotation != nil
 	if podAnnotation == nil {

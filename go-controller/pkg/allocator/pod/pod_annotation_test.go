@@ -72,6 +72,10 @@ func (a *idAllocatorStub) ReleaseID() int {
 	return a.nextID
 }
 
+func (a *idAllocatorStub) IsAllocated() bool {
+	return false
+}
+
 type persistentIPsStub struct {
 	datastore map[string]ipamclaimsapi.IPAMClaim
 }
