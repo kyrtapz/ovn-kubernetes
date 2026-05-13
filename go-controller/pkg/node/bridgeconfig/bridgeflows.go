@@ -1024,16 +1024,20 @@ func (b *BridgeConfiguration) allowNodeIPGARPFlows(nodeIPs []net.IP) []string {
 	return flows
 }
 
-// arpFilterFlows ensures only the default network GR replies to ARP requests
-// for the local node IP. When an ARP request arrives on br-ex, the priority-10
-// fan-out rule replicates it to every patch port. All CUDN GRs share the same
-// node IP on their external interface, so every one of them generates an ARP
-// reply. These duplicate replies flood the physical network and cause remote
-// nodes to passively learn lots of MAC_Bindings, driving ovs-vswitchd CPU up.
+// arpFilterFlows ensures only the default network handles ARP for the local
+// node IP on br-ex. Without these flows, the priority-10 fan-out rule and
+// NORMAL action replicate ARP to every patch port. With many CUDNs this
+// causes duplicate ARP replies (flooding MAC_Bindings) and >4096 resubmit
+// loops on br-int for broadcast ARP requests.
 //
-// Two flows per node IP (IPv4 only, ARP is IPv4):
-//   - priority 12: allow ARP replies from the default network patch port
-//   - priority 11: drop ARP replies from any other patch port
+// Flows per node IP (IPv4 only, ARP is IPv4):
+//
+// ARP replies (from OVN → physical):
+//   - priority 12: allow from default network patch port
+//   - priority 11: drop from any other patch port
+//
+// ARP requests (from physical → OVN):
+//   - priority 12: send to default network patch port only
 //
 // Must be called with bridge.mutex held.
 func (b *BridgeConfiguration) arpFilterFlows(bridgeMacAddress string) []string {
@@ -1057,6 +1061,14 @@ func (b *BridgeConfiguration) arpFilterFlows(bridgeMacAddress string) []string {
 			fmt.Sprintf("cookie=%s, priority=11, table=0, dl_src=%s, arp, arp_op=2, arp_spa=%s, "+
 				"actions=drop",
 				nodetypes.DefaultOpenFlowCookie, bridgeMacAddress, ip.IP))
+
+		if b.ofPortPhys != "" {
+			// send ARP requests for the node IP to the default network patch port only
+			flows = append(flows,
+				fmt.Sprintf("cookie=%s, priority=12, table=0, in_port=%s, arp, arp_op=1, arp_tpa=%s, "+
+					"actions=output:%s",
+					nodetypes.DefaultOpenFlowCookie, b.ofPortPhys, ip.IP, defaultNetConfig.OfPortPatch))
+		}
 	}
 	return flows
 }

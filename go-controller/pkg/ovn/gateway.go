@@ -283,7 +283,6 @@ func (gw *GatewayManager) createGWRouter(gwConfig *GatewayConfig) (*nbdb.Logical
 		"dynamic_neigh_routers":         dynamicNeighRouters,
 		"chassis":                       gwConfig.annoConfig.ChassisID,
 		"lb_force_snat_ip":              "router_ip",
-		"mac_binding_age_threshold":     types.GRMACBindingAgeThreshold,
 	}
 	// set the snat-ct-zone only for the default network
 	// for UDN's OVN will pick a random one
@@ -1137,6 +1136,9 @@ func (gw *GatewayManager) addExternalSwitch(prefix, interfaceID, gatewayRouter, 
 		externalLogicalRouterPort.ExternalIDs = map[string]string{
 			types.NetworkExternalID:  gw.netInfo.GetNetworkName(),
 			types.TopologyExternalID: gw.netInfo.TopologyType(),
+		}
+		externalLogicalRouterPort.Options = map[string]string{
+			"disable_garp_rarp": "true",
 		}
 	}
 	logicalRouter := nbdb.LogicalRouter{Name: gatewayRouter}
