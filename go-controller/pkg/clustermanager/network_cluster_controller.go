@@ -38,6 +38,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/persistentips"
 	objretry "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -727,8 +728,13 @@ func (ncc *networkClusterController) Start(_ context.Context) error {
 	}
 
 	initDuration := time.Since(start)
-	klog.Infof("Network setup step completed: step=cm_initialized network=%s topology=%s elapsed_ms=%.1f",
-		ncc.GetNetworkName(), ncc.TopologyType(), float64(initDuration.Microseconds())/1000.0)
+	klog.Infof("Cluster manager network controller %q initialized. Took: %v", ncc.GetNetworkName(), initDuration)
+	telemetry.Emit(telemetry.Event{
+		Event:   "cm_initialized",
+		Network: ncc.GetNetworkName(),
+		Topo:    ncc.TopologyType(),
+		Elapsed: float64(initDuration.Microseconds()) / 1000.0,
+	})
 
 	if ncc.hasNodeAllocation() {
 		start = time.Now()
@@ -740,8 +746,13 @@ func (ncc *networkClusterController) Start(_ context.Context) error {
 			return err
 		}
 		nodeRegDuration := time.Since(start)
-		klog.Infof("Network setup step completed: step=cm_nodes_registered network=%s topology=%s elapsed_ms=%.1f",
-			ncc.GetNetworkName(), ncc.TopologyType(), float64(nodeRegDuration.Microseconds())/1000.0)
+		klog.Infof("Cluster manager network controller %q completed shared node registration. Took: %v", ncc.GetNetworkName(), nodeRegDuration)
+		telemetry.Emit(telemetry.Event{
+			Event:   "cm_nodes_registered",
+			Network: ncc.GetNetworkName(),
+			Topo:    ncc.TopologyType(),
+			Elapsed: float64(nodeRegDuration.Microseconds()) / 1000.0,
+		})
 	}
 
 	if ncc.hasPodAllocation() {

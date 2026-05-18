@@ -25,6 +25,7 @@ import (
 	libovsdbutil "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/libovsdb/util"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/nbdb"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 	utilerrors "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util/errors"
@@ -381,12 +382,41 @@ func (oc *DefaultNetworkController) addLogicalPort(pod *corev1.Pod) (err error) 
 	// observe the pod creation latency metric for newly created pods only
 	if newlyCreatedPort {
 		metrics.RecordPodCreated(pod, oc.GetNetInfo())
-	}
-	if podAnnotation != nil && !podAnnotation.AllocatedAt.IsZero() {
-		sinceAlloc := time.Since(podAnnotation.AllocatedAt)
-		klog.Infof("Pod setup step completed: step=ovn_lsp_created pod=%s/%s network=%s topology=%s role=%s since_annotation_ms=%.1f libovsdb_ms=%.1f",
-			pod.Namespace, pod.Name, oc.GetNetworkName(), oc.TopologyType(), podAnnotation.Role,
-			float64(sinceAlloc.Microseconds())/1000.0, float64(libovsdbExecuteTime.Microseconds())/1000.0)
+		detail := map[string]any{
+			"libovsdb_ms":    float64(libovsdbExecuteTime.Microseconds()) / 1000.0,
+			"since_start_ms": float64(time.Since(start).Microseconds()) / 1000.0,
+		}
+		if podAnnotation != nil && !podAnnotation.AllocatedAt.IsZero() {
+			detail["since_annotation_ms"] = float64(time.Since(podAnnotation.AllocatedAt).Microseconds()) / 1000.0
+		}
+		ctrlDetail := map[string]any{}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionTrue {
+				ctrlDetail["scheduled_at"] = cond.LastTransitionTime.UTC().Format(time.RFC3339Nano)
+				ctrlDetail["queue_ms"] = float64(start.Sub(cond.LastTransitionTime.Time).Microseconds()) / 1000.0
+				break
+			}
+		}
+		telemetry.EmitAt(start, telemetry.Event{
+			Event:   "ctrl_pod_received",
+			PodUID:  string(pod.UID),
+			Pod:     pod.Namespace + "/" + pod.Name,
+			Network: oc.GetNetworkName(),
+			Topo:    oc.TopologyType(),
+			Node:    pod.Spec.NodeName,
+			Detail:  ctrlDetail,
+		})
+		telemetry.Emit(telemetry.Event{
+			Event:   "ctrl_lsp_created",
+			PodUID:  string(pod.UID),
+			Pod:     pod.Namespace + "/" + pod.Name,
+			Network: oc.GetNetworkName(),
+			Topo:    oc.TopologyType(),
+			Role:    podAnnotation.Role,
+			Node:    pod.Spec.NodeName,
+			Elapsed: float64(libovsdbExecuteTime.Microseconds()) / 1000.0,
+			Detail:  detail,
+		})
 	}
 	return nil
 }

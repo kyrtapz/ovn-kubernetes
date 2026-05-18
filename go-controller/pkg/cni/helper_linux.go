@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/knftables"
 
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -652,6 +653,12 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 		return fmt.Errorf("failure in plugging pod interface: %v\n  %q", err, out)
 	}
 
+	telemetry.Emit(telemetry.Event{
+		Event:   "cni_ovs_port_added",
+		Pod:     namespace + "/" + podName,
+		Network: ifInfo.NetName,
+	})
+
 	if err := clearPodBandwidth(sandboxID); err != nil {
 		return err
 	}
@@ -731,6 +738,12 @@ func (*defaultPodRequestInterfaceOps) ConfigureInterface(pr *PodRequest, getter 
 	if err != nil {
 		return nil, err
 	}
+
+	telemetry.Emit(telemetry.Event{
+		Event:   "cni_interface_configured",
+		Pod:     pr.PodNamespace + "/" + pr.PodName,
+		Network: ifInfo.NetName,
+	})
 
 	if !ifInfo.IsDPUHostMode {
 		err = ConfigureOVS(pr.ctx, pr.PodNamespace, pr.PodName, pr.IfName, hostIface.Name, ifInfo, pr.SandboxID, pr.CNIConf.DeviceID, getter)

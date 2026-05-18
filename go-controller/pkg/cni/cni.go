@@ -28,6 +28,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kubevirt"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/libovsdb/ops/ovs"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -223,19 +224,29 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(
 	pod, annotations, podNADAnnotation, err := GetPodWithAnnotations(pr.ctx, clientset, namespace, podName, pr.nadKey, annotCondFn)
 	annotWaitDuration := time.Since(annotWaitStart)
 	if err != nil {
-		klog.Warningf("Pod setup step failed: step=cni_annotation_ready pod=%s/%s network=%s annotation_wait_ms=%.1f err=%v",
-			namespace, podName, pr.netName, float64(annotWaitDuration.Microseconds())/1000.0, err)
+		telemetry.Emit(telemetry.Event{
+			Event:   "cni_annotation_ready_failed",
+			Pod:     namespace + "/" + podName,
+			Network: pr.netName,
+			Elapsed: float64(annotWaitDuration.Microseconds()) / 1000.0,
+			Detail:  map[string]any{"err": err.Error()},
+		})
 		return nil, fmt.Errorf("failed to get pod annotation: %v", err)
 	}
-	// Log cross-component latency: how long CNI waited for cluster-manager annotation
 	if podNADAnnotation != nil {
-		sinceAllocMsg := ""
-		if !podNADAnnotation.AllocatedAt.IsZero() {
-			sinceAlloc := time.Since(podNADAnnotation.AllocatedAt)
-			sinceAllocMsg = fmt.Sprintf(" since_annotation_ms=%.1f", float64(sinceAlloc.Microseconds())/1000.0)
+		detail := map[string]any{
+			"annotation_wait_ms": float64(annotWaitDuration.Microseconds()) / 1000.0,
 		}
-		klog.Infof("Pod setup step completed: step=cni_annotation_ready pod=%s/%s network=%s annotation_wait_ms=%.1f%s",
-			namespace, podName, pr.netName, float64(annotWaitDuration.Microseconds())/1000.0, sinceAllocMsg)
+		if !podNADAnnotation.AllocatedAt.IsZero() {
+			detail["since_annotation_ms"] = float64(time.Since(podNADAnnotation.AllocatedAt).Microseconds()) / 1000.0
+		}
+		telemetry.Emit(telemetry.Event{
+			Event:   "cni_annotation_ready",
+			Pod:     namespace + "/" + podName,
+			Network: pr.netName,
+			Elapsed: float64(annotWaitDuration.Microseconds()) / 1000.0,
+			Detail:  detail,
+		})
 	}
 
 	var primaryUDNPodInfo *PodInterfaceInfo
@@ -246,13 +257,21 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(
 			return nil, err
 		}
 		klog.V(4).Infof("Pod %s/%s primaryUDN podRequest %v podInfo %v", namespace, podName, primaryUDNPodRequest, primaryUDNPodInfo)
-		// Log primary UDN annotation cross-component latency
 		primaryAnnotation := primaryUDN.Annotation()
-		if primaryAnnotation != nil && !primaryAnnotation.AllocatedAt.IsZero() {
-			sinceAlloc := time.Since(primaryAnnotation.AllocatedAt)
-			klog.Infof("Pod setup step completed: step=cni_annotation_ready pod=%s/%s network=%s annotation_wait_ms=%.1f since_annotation_ms=%.1f",
-				namespace, podName, primaryUDN.NetworkName(),
-				float64(annotWaitDuration.Microseconds())/1000.0, float64(sinceAlloc.Microseconds())/1000.0)
+		if primaryAnnotation != nil {
+			detail := map[string]any{
+				"annotation_wait_ms": float64(annotWaitDuration.Microseconds()) / 1000.0,
+			}
+			if !primaryAnnotation.AllocatedAt.IsZero() {
+				detail["since_annotation_ms"] = float64(time.Since(primaryAnnotation.AllocatedAt).Microseconds()) / 1000.0
+			}
+			telemetry.Emit(telemetry.Event{
+				Event:   "cni_annotation_ready",
+				Pod:     namespace + "/" + podName,
+				Network: primaryUDN.NetworkName(),
+				Elapsed: float64(annotWaitDuration.Microseconds()) / 1000.0,
+				Detail:  detail,
+			})
 		}
 	}
 
@@ -478,6 +497,13 @@ func HandlePodRequest(
 
 	cniStart := time.Now()
 	klog.Infof("%s %s starting CNI request %+v", request, request.Command, request)
+	if request.Command == CNIAdd {
+		telemetry.Emit(telemetry.Event{
+			Event:   "cni_add_start",
+			Pod:     request.PodNamespace + "/" + request.PodName,
+			Network: request.netName,
+		})
+	}
 	switch request.Command {
 	case CNIAdd:
 		response, err = request.cmdAdd(kubeAuth, clientset, networkManager, ovsClient)
@@ -507,8 +533,12 @@ func HandlePodRequest(
 	klog.Infof("%s %s finished CNI request %+v, result %q, err %v",
 		request, request.Command, request, string(resultForLogging), err)
 	if request.Command == CNIAdd && err == nil {
-		klog.Infof("Pod setup step completed: step=cni_complete pod=%s/%s network=%s elapsed_ms=%.1f",
-			request.PodNamespace, request.PodName, request.netName, float64(cniDuration.Microseconds())/1000.0)
+		telemetry.Emit(telemetry.Event{
+			Event:   "cni_complete",
+			Pod:     request.PodNamespace + "/" + request.PodName,
+			Network: request.netName,
+			Elapsed: float64(cniDuration.Microseconds()) / 1000.0,
+		})
 	}
 
 	if err != nil {
