@@ -33,6 +33,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -310,6 +311,13 @@ func (s *Server) handleCNIRequest(r *http.Request) (result []byte, err error) {
 
 	cniStart := time.Now()
 	klog.Infof("%s %s starting CNI request", request, request.Command)
+	if request.Command == CNIAdd {
+		telemetry.Emit(telemetry.Event{
+			Event:   "cni_add_start",
+			Pod:     request.PodNamespace + "/" + request.PodName,
+			Network: request.netName,
+		})
+	}
 	switch request.Command {
 	case CNIAdd:
 		response, err = request.cmdAdd(s.kubeAuth, s.clientSet, s.ovsClient)
@@ -347,6 +355,12 @@ func (s *Server) handleCNIRequest(r *http.Request) (result []byte, err error) {
 		cniDuration := time.Since(cniStart)
 		klog.Infof("Pod setup step completed: step=cni_complete pod=%s/%s network=%s elapsed_ms=%.1f",
 			request.PodNamespace, request.PodName, request.netName, float64(cniDuration.Microseconds())/1000.0)
+		telemetry.Emit(telemetry.Event{
+			Event:   "cni_complete",
+			Pod:     request.PodNamespace + "/" + request.PodName,
+			Network: request.netName,
+			Elapsed: float64(cniDuration.Microseconds()) / 1000.0,
+		})
 	}
 
 	if result, err = response.Marshal(); err != nil {

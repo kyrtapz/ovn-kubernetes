@@ -15,6 +15,7 @@ import (
 	kexec "k8s.io/utils/exec"
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/metrics"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
 
@@ -216,8 +217,13 @@ func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
 				errDetail = "canceled while"
 			}
 			waitDuration := time.Since(waitStart)
-			klog.Warningf("Pod setup step failed: step=cni_ovn_installed_wait pod=%s/%s network=%s iface=%s wait_ms=%.1f err=%s",
-				namespace, name, ifInfo.NetName, ifaceName, float64(waitDuration.Microseconds())/1000.0, errDetail)
+			telemetry.Emit(telemetry.Event{
+				Event:   "cni_ovn_installed_failed",
+				Pod:     namespace + "/" + name,
+				Network: ifInfo.NetName,
+				Elapsed: float64(waitDuration.Microseconds()) / 1000.0,
+				Detail:  map[string]any{"iface": ifaceName, "err": errDetail},
+			})
 			return fmt.Errorf("%s waiting for OVS port binding (ovn-installed) for %s %v", errDetail, mac, ifAddrs)
 		default:
 			// check to see if the interface has its expected external id set, which indicates if it is active
@@ -229,8 +235,13 @@ func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
 			}
 			if err == nil && len(output) == 2 && output[1] == "true" {
 				waitDuration := time.Since(waitStart)
-				klog.Infof("Pod setup step completed: step=cni_ovn_installed_wait pod=%s/%s network=%s iface=%s wait_ms=%.1f",
-					namespace, name, ifInfo.NetName, ifaceName, float64(waitDuration.Microseconds())/1000.0)
+				telemetry.Emit(telemetry.Event{
+					Event:   "cni_ovn_installed",
+					Pod:     namespace + "/" + name,
+					Network: ifInfo.NetName,
+					Elapsed: float64(waitDuration.Microseconds()) / 1000.0,
+					Detail:  map[string]any{"iface": ifaceName},
+				})
 				return nil
 			}
 			klog.V(5).Infof("Still waiting for OVS port %s to have ovn-installed=true", ifaceName)

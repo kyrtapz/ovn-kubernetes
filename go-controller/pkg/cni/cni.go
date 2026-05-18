@@ -23,6 +23,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kubevirt"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/libovsdb/ops/ovs"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -172,19 +173,29 @@ func (pr *PodRequest) cmdAdd(kubeAuth *KubeAPIAuth, clientset *ClientSet, ovsCli
 	pod, annotations, podNADAnnotation, err := GetPodWithAnnotations(pr.ctx, clientset, namespace, podName, pr.nadKey, annotCondFn)
 	annotWaitDuration := time.Since(annotWaitStart)
 	if err != nil {
-		klog.Warningf("Pod setup step failed: step=cni_annotation_ready pod=%s/%s network=%s annotation_wait_ms=%.1f err=%v",
-			namespace, podName, pr.netName, float64(annotWaitDuration.Microseconds())/1000.0, err)
+		telemetry.Emit(telemetry.Event{
+			Event:   "cni_annotation_ready_failed",
+			Pod:     namespace + "/" + podName,
+			Network: pr.netName,
+			Elapsed: float64(annotWaitDuration.Microseconds()) / 1000.0,
+			Detail:  map[string]any{"err": err.Error()},
+		})
 		return nil, fmt.Errorf("failed to get pod annotation: %v", err)
 	}
-	// Log cross-component latency: how long CNI waited for cluster-manager annotation
 	if podNADAnnotation != nil {
-		sinceAllocMsg := ""
-		if !podNADAnnotation.AllocatedAt.IsZero() {
-			sinceAlloc := time.Since(podNADAnnotation.AllocatedAt)
-			sinceAllocMsg = fmt.Sprintf(" since_annotation_ms=%.1f", float64(sinceAlloc.Microseconds())/1000.0)
+		detail := map[string]any{
+			"annotation_wait_ms": float64(annotWaitDuration.Microseconds()) / 1000.0,
 		}
-		klog.Infof("Pod setup step completed: step=cni_annotation_ready pod=%s/%s network=%s annotation_wait_ms=%.1f%s",
-			namespace, podName, pr.netName, float64(annotWaitDuration.Microseconds())/1000.0, sinceAllocMsg)
+		if !podNADAnnotation.AllocatedAt.IsZero() {
+			detail["since_annotation_ms"] = float64(time.Since(podNADAnnotation.AllocatedAt).Microseconds()) / 1000.0
+		}
+		telemetry.Emit(telemetry.Event{
+			Event:   "cni_annotation_ready",
+			Pod:     namespace + "/" + podName,
+			Network: pr.netName,
+			Elapsed: float64(annotWaitDuration.Microseconds()) / 1000.0,
+			Detail:  detail,
+		})
 	}
 
 	if err = pr.checkOrUpdatePodUID(pod); err != nil {

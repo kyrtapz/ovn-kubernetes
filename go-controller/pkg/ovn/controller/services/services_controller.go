@@ -45,6 +45,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
 	syncmap "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/syncmap"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -842,6 +843,14 @@ func (c *Controller) syncServiceForNetwork(state *networkState, key string) erro
 		if err := EnsureLBs(c.nbClient, service, existingLBs, lbs, state.netInfo); err != nil {
 			return fmt.Errorf("failed to ensure service %s load balancers for network=%s: %w", key, state.netInfo.GetNetworkName(), err)
 		}
+		telemetry.Emit(telemetry.Event{
+			Event:   "svc_lb_updated",
+			Svc:     key,
+			Network: state.netInfo.GetNetworkName(),
+			Topo:    state.netInfo.TopologyType(),
+			Elapsed: float64(time.Since(startTime).Microseconds()) / 1000.0,
+			Detail:  map[string]any{"lbs": len(lbs)},
+		})
 
 		state.alreadyAppliedRWLock.Lock()
 		state.alreadyApplied[key] = lbs

@@ -27,6 +27,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/retry"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 	utilerrors "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util/errors"
@@ -827,6 +828,11 @@ func (bnc *BaseNetworkController) handleLocalPodSelectorAddFunc(np *networkPolic
 		if err = bnc.denyPGAddPorts(np, portNamesToUUIDs, ops); err != nil {
 			return fmt.Errorf("unable to add new pod to default deny port group: %v", err)
 		}
+		telemetry.Emit(telemetry.Event{
+			Event:   "ctrl_netpol_pod_added",
+			Network: bnc.GetNetworkName(),
+			Detail:  map[string]any{"policy": np.namespace + "/" + np.name, "ports_added": len(portNamesToUUIDs)},
+		})
 		// all operations were successful, update np.localPods
 		for portName, portUUID := range portNamesToUUIDs {
 			np.localPods.Store(portName, portUUID)

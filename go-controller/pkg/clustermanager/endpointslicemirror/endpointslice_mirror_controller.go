@@ -27,6 +27,7 @@ import (
 	controllerutil "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controller"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 	utilerrors "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util/errors"
@@ -340,6 +341,7 @@ func (c *Controller) syncDefaultEndpointSlice(ctx context.Context, key string) e
 	}
 
 	if !reflect.DeepEqual(currentMirror, mirroredEndpointSlice) {
+		svcName := defaultEndpointSlice.Labels[v1.LabelServiceName]
 		if currentMirror.Name == "" {
 			if len(currentMirror.Endpoints) == 0 {
 				klog.V(5).Infof("Skipping creation of empty mirrored EndpointSlice for: %s", cache.MetaObjectToName(defaultEndpointSlice))
@@ -347,10 +349,28 @@ func (c *Controller) syncDefaultEndpointSlice(ctx context.Context, key string) e
 			}
 			klog.Infof("Creating the mirrored EndpointSlice for: %s", cache.MetaObjectToName(defaultEndpointSlice))
 			_, err := c.kubeClient.DiscoveryV1().EndpointSlices(namespace).Create(ctx, currentMirror, metav1.CreateOptions{})
+			if err == nil {
+				telemetry.Emit(telemetry.Event{
+					Event:   "eps_mirrored",
+					Svc:     namespace + "/" + svcName,
+					Network: namespacePrimaryNetwork.GetNetworkName(),
+					Topo:    namespacePrimaryNetwork.TopologyType(),
+					Detail:  map[string]any{"action": "create", "endpoints": len(currentMirror.Endpoints)},
+				})
+			}
 			return err
 		}
 		klog.Infof("Updating the mirrored EndpointSlice: %s for: %s", cache.MetaObjectToName(currentMirror), cache.MetaObjectToName(defaultEndpointSlice))
 		_, err := c.kubeClient.DiscoveryV1().EndpointSlices(namespace).Update(ctx, currentMirror, metav1.UpdateOptions{})
+		if err == nil {
+			telemetry.Emit(telemetry.Event{
+				Event:   "eps_mirrored",
+				Svc:     namespace + "/" + svcName,
+				Network: namespacePrimaryNetwork.GetNetworkName(),
+				Topo:    namespacePrimaryNetwork.TopologyType(),
+				Detail:  map[string]any{"action": "update", "endpoints": len(currentMirror.Endpoints)},
+			})
+		}
 		return err
 	}
 	return nil

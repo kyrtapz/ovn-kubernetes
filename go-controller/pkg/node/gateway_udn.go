@@ -29,6 +29,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/node/managementport"
 	nodenft "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/node/nftables"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/node/vrfmanager"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 	utilerrors "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util/errors"
@@ -326,8 +327,13 @@ func (udng *UserDefinedNetworkGateway) AddNetwork() error {
 			return err
 		}
 		patchWaitDuration := time.Since(patchWaitStart)
-		klog.Infof("Network setup step completed: step=node_patch_port_ready network=%s topology=%s wait_ms=%.1f",
-			udng.GetNetworkName(), udng.TopologyType(), float64(patchWaitDuration.Microseconds())/1000.0)
+		klog.Infof("Network %s patch port ready on node. Took: %v", udng.GetNetworkName(), patchWaitDuration)
+		telemetry.Emit(telemetry.Event{
+			Event:   "node_network_ready",
+			Network: udng.GetNetworkName(),
+			Topo:    udng.TopologyType(),
+			Elapsed: float64(patchWaitDuration.Microseconds()) / 1000.0,
+		})
 	} else {
 		if err := udng.gateway.Reconcile(); err != nil {
 			return fmt.Errorf("failed to reconcile flows on bridge for network %s; error: %v", udng.GetNetworkName(), err)

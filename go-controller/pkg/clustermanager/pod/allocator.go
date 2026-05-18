@@ -28,6 +28,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/persistentips"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
@@ -383,15 +384,9 @@ func (a *PodAllocator) allocatePodOnNAD(pod *corev1.Pod, nadKey string, network 
 	}
 
 	if networkRole == types.NetworkRoleNone {
-		// pod not on this controller, nothing to do
 		return nil
 	}
 
-	// If the tunnel ID is already allocated for this pod+network but the
-	// annotation doesn't reflect it yet, the lister is stale (informer lag).
-	// The annotation was already written successfully — skip re-processing
-	// to avoid wasting API calls. The informer will eventually deliver
-	// the updated pod and needsAnnotationUpdate will correctly bail out.
 	if idAllocator != nil && idAllocator.IsAllocated() {
 		existing, _ := util.UnmarshalPodAnnotation(pod.Annotations, nadKey)
 		if existing == nil || existing.TunnelID == 0 {
@@ -400,6 +395,25 @@ func (a *PodAllocator) allocatePodOnNAD(pod *corev1.Pod, nadKey string, network 
 			return nil
 		}
 	}
+
+	cmDetail := map[string]any{}
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionTrue {
+			cmDetail["scheduled_at"] = cond.LastTransitionTime.UTC().Format(time.RFC3339Nano)
+			cmDetail["queue_ms"] = float64(allocStart.Sub(cond.LastTransitionTime.Time).Microseconds()) / 1000.0
+			break
+		}
+	}
+	telemetry.Emit(telemetry.Event{
+		Event:   "cm_pod_received",
+		PodUID:  string(pod.UID),
+		Pod:     pod.Namespace + "/" + pod.Name,
+		Network: a.netInfo.GetNetworkName(),
+		Topo:    a.netInfo.TopologyType(),
+		Role:    networkRole,
+		Node:    pod.Spec.NodeName,
+		Detail:  cmDetail,
+	})
 
 	node, err := a.nodeLister.Get(pod.Spec.NodeName)
 	if err != nil {
@@ -429,9 +443,17 @@ func (a *PodAllocator) allocatePodOnNAD(pod *corev1.Pod, nadKey string, network 
 
 	if updatedPod != nil {
 		allocDuration := time.Since(allocStart)
-		klog.Infof("Pod setup step completed: step=cm_annotated pod=%s/%s network=%s topology=%s role=%s elapsed_ms=%.1f",
-			pod.Namespace, pod.Name, a.netInfo.GetNetworkName(), a.netInfo.TopologyType(), networkRole, float64(allocDuration.Microseconds())/1000.0)
 		metrics.RecordPodAllocated(allocDuration, a.netInfo.GetNetworkName(), a.netInfo.TopologyType(), networkRole)
+		telemetry.Emit(telemetry.Event{
+			Event:   "cm_annotated",
+			PodUID:  string(pod.UID),
+			Pod:     pod.Namespace + "/" + pod.Name,
+			Network: a.netInfo.GetNetworkName(),
+			Topo:    a.netInfo.TopologyType(),
+			Role:    networkRole,
+			Node:    pod.Spec.NodeName,
+			Elapsed: float64(allocDuration.Microseconds()) / 1000.0,
+		})
 	}
 
 	return err
