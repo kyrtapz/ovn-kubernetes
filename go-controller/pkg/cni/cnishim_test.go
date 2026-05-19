@@ -179,7 +179,9 @@ func TestCmdAdd_UnprivilegedMode(t *testing.T) {
 			t.Fatalf("failed to unmarshal output: %v", err)
 		}
 
-		// Expected output includes both interfaces wired by CNIShim
+		// Expected output includes both interfaces wired by CNIShim.
+		// Each network produces a host+container pair, so 4 interfaces total.
+		// Container-side indices: default=1, UDN=3
 		expected := `{
   "cniVersion": "1.1.0",
   "interfaces": [

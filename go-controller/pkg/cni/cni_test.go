@@ -40,19 +40,22 @@ type podRequestInterfaceOpsStub struct {
 	unconfiguredInterfaces []*PodInterfaceInfo
 }
 
-func (stub *podRequestInterfaceOpsStub) ConfigureInterface(pr *PodRequest, _ PodInfoGetter, pii *PodInterfaceInfo) ([]*current.Interface, error) {
-	if len(pii.IPs) > 0 {
-		return []*current.Interface{
-			{
-				Name: "host_" + pr.IfName,
-			},
-			{
-				Name:    pr.IfName,
-				Sandbox: "/var/run/netns/" + pr.PodNamespace + "_" + pr.PodName,
-			},
-		}, nil
+func (stub *podRequestInterfaceOpsStub) ConfigureInterfaces(_ PodInfoGetter, requests ...InterfaceRequest) ([]*current.Interface, error) {
+	var result []*current.Interface
+	for _, req := range requests {
+		if len(req.IfInfo.IPs) > 0 {
+			result = append(result,
+				&current.Interface{
+					Name: "host_" + req.PR.IfName,
+				},
+				&current.Interface{
+					Name:    req.PR.IfName,
+					Sandbox: "/var/run/netns/" + req.PR.PodNamespace + "_" + req.PR.PodName,
+				},
+			)
+		}
 	}
-	return nil, nil
+	return result, nil
 }
 func (stub *podRequestInterfaceOpsStub) UnconfigureInterface(_ *PodRequest, ifInfo *PodInterfaceInfo) error {
 	stub.unconfiguredInterfaces = append(stub.unconfiguredInterfaces, ifInfo)

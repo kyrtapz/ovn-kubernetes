@@ -267,22 +267,19 @@ func (p *Plugin) CmdAdd(args *skel.CmdArgs) error {
 		}
 
 		// In the case where ovnkube-node is running in Unprivileged mode, all the work
-		result, err = getCNIResult(pr, clientset, response.PodIFInfo)
-		if err != nil {
-			err = fmt.Errorf("failed to get CNI Result from pod interface info %v: %v", response.PodIFInfo, err)
-			klog.Error(err.Error())
-			return err
-		}
+		ifaceRequests := []InterfaceRequest{{PR: pr, IfInfo: response.PodIFInfo}}
 		if response.PrimaryUDNPodInfo != nil {
 			primaryUDNPodRequest := response.PrimaryUDNPodReq
-			primaryUDNPodRequest.ctx = ctx
-
-			primaryUDNResult, err := getCNIResult(primaryUDNPodRequest, clientset, response.PrimaryUDNPodInfo)
-			if err != nil {
-				klog.Error(err.Error())
-				return err
-			}
-			mergePrimaryUDNResponse(&Response{Result: result}, &Response{Result: primaryUDNResult}, primaryUDNPodRequest)
+			var cancel context.CancelFunc
+			primaryUDNPodRequest.ctx, cancel = context.WithCancel(pr.ctx)
+			defer cancel()
+			ifaceRequests = append(ifaceRequests, InterfaceRequest{PR: primaryUDNPodRequest, IfInfo: response.PrimaryUDNPodInfo})
+		}
+		result, err = getCNIResult(clientset, ifaceRequests...)
+		if err != nil {
+			err = fmt.Errorf("failed to get CNI Result from pod interface info: %v", err)
+			klog.Error(err.Error())
+			return err
 		}
 	}
 

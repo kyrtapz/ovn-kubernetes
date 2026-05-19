@@ -187,6 +187,14 @@ type PodRequest struct {
 	deviceInfo nadapi.DeviceInfo
 }
 
+// InterfaceRequest pairs a PodRequest with its PodInterfaceInfo for a single network.
+type InterfaceRequest struct {
+	PR     *PodRequest
+	IfInfo *PodInterfaceInfo
+}
+
+type getCNIResultFunc func(getter PodInfoGetter, requests ...InterfaceRequest) (*current.Result, error)
+
 type PodInfoGetter interface {
 	getPod(namespace, name string) (*corev1.Pod, error)
 }

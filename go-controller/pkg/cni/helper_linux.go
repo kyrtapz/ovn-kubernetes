@@ -22,6 +22,7 @@ import (
 	"github.com/safchain/ethtool"
 	"github.com/vishvananda/netlink"
 
+	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/knftables"
 
@@ -511,15 +512,16 @@ func getPfEncapIP(deviceID string) (string, error) {
 	return encapIP, nil
 }
 
-// ConfigureOVS performs OVS configurations in order to set up Pod networking
-func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceName string,
-	ifInfo *PodInterfaceInfo, sandboxID, deviceID string, isVFIO bool, getter PodInfoGetter) error {
+// addOVSPort creates the OVS port for a pod interface and configures all
+// external IDs, bandwidth, and link properties. It returns the iface-id
+// needed for the subsequent waitForPodInterface call.
+func addOVSPort(ctx context.Context, namespace, podName, podIfName, hostIfaceName string,
+	ifInfo *PodInterfaceInfo, sandboxID, deviceID string, isVFIO bool) (string, error) {
 
 	ifaceID := util.GetIfaceId(namespace, podName)
 	if ifInfo.NetName != types.DefaultNetworkName {
 		ifaceID = util.GetUDNIfaceId(namespace, podName, ifInfo.NADKey)
 	}
-	initialPodUID := ifInfo.PodUID
 	ipStrs := make([]string, len(ifInfo.IPs))
 	for i, ip := range ifInfo.IPs {
 		ipStrs[i] = ip.String()
@@ -527,11 +529,11 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 
 	br_type, err := getDatapathType("br-int")
 	if err != nil {
-		return fmt.Errorf("failed to get datapath type for bridge br-int : %v", err)
+		return "", fmt.Errorf("failed to get datapath type for bridge br-int : %v", err)
 	}
 
-	klog.Infof("ConfigureOVS: namespace: %s, podName: %s, hostIfaceName: %s, network: %s, NAD %s, SandboxID: %q, PCI device ID: %s, UID: %q, MAC: %s, IPs: %v",
-		namespace, podName, hostIfaceName, ifInfo.NetName, ifInfo.NADKey, sandboxID, deviceID, initialPodUID, ifInfo.MAC, ipStrs)
+	klog.Infof("addOVSPort: namespace: %s, podName: %s, hostIfaceName: %s, network: %s, NAD %s, SandboxID: %q, PCI device ID: %s, UID: %q, MAC: %s, IPs: %v",
+		namespace, podName, hostIfaceName, ifInfo.NetName, ifInfo.NADKey, sandboxID, deviceID, ifInfo.PodUID, ifInfo.MAC, ipStrs)
 
 	// Find and remove any existing OVS port with this iface-id. Pods can
 	// have multiple sandboxes if some are waiting for garbage collection,
@@ -560,10 +562,10 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 			nadKeyString = types.DefaultNetworkName
 		}
 		if ifaceIDStr != ifaceID {
-			return fmt.Errorf("OVS port %s was added for iface-id (%s), now readding it for (%s)", hostIfaceName, ifaceIDStr, ifaceID)
+			return "", fmt.Errorf("OVS port %s was added for iface-id (%s), now readding it for (%s)", hostIfaceName, ifaceIDStr, ifaceID)
 		}
 		if nadKeyString != ifInfo.NADKey {
-			return fmt.Errorf("OVS port %s was added for NAD (%s), expect (%s)", hostIfaceName, nadKeyString, ifInfo.NADKey)
+			return "", fmt.Errorf("OVS port %s was added for NAD (%s), expect (%s)", hostIfaceName, nadKeyString, ifInfo.NADKey)
 		}
 	}
 
@@ -574,7 +576,7 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 		"--", "set", "interface", hostIfaceName,
 		fmt.Sprintf("external_ids:attached_mac=%s", ifInfo.MAC),
 		fmt.Sprintf("external_ids:iface-id=%s", ifaceID),
-		fmt.Sprintf("external_ids:iface-id-ver=%s", initialPodUID),
+		fmt.Sprintf("external_ids:iface-id-ver=%s", ifInfo.PodUID),
 		fmt.Sprintf("external_ids:sandbox=%s", sandboxID),
 	}
 
@@ -591,7 +593,7 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 	if deviceID != "" {
 		encapIP, err := getPfEncapIP(deviceID)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if len(encapIP) > 0 {
 			ovsArgs = append(ovsArgs, fmt.Sprintf("external_ids:encap-ip=%s", encapIP))
@@ -638,7 +640,7 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 	}
 
 	if out, err := ovsExec(ovsArgs...); err != nil {
-		return fmt.Errorf("failure in plugging pod interface: %v\n  %q", err, out)
+		return "", fmt.Errorf("failure in plugging pod interface: %v\n  %q", err, out)
 	}
 
 	telemetry.Emit(telemetry.Event{
@@ -648,51 +650,60 @@ func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceN
 	})
 
 	if err := clearPodBandwidth(sandboxID); err != nil {
-		return err
+		return "", err
 	}
 
 	var link netlink.Link
 	if deviceID != "" || (ifInfo.Ingress > 0 || ifInfo.Egress > 0) {
 		if link, err = util.GetNetLinkOps().LinkByName(hostIfaceName); err != nil {
-			return fmt.Errorf("failed to find interface %s: %v", hostIfaceName, err)
+			return "", fmt.Errorf("failed to find interface %s: %v", hostIfaceName, err)
 		}
 	}
 
 	if deviceID != "" {
-		// 4. set MTU on the representor
 		if err = util.GetNetLinkOps().LinkSetMTU(link, ifInfo.MTU); err != nil {
-			return fmt.Errorf("failed to set MTU on %s: %v", hostIfaceName, err)
+			return "", fmt.Errorf("failed to set MTU on %s: %v", hostIfaceName, err)
 		}
-		// 5. if the interface is not up, set it to up
 		err = util.GetNetLinkOps().LinkSetUp(link)
 		if err != nil {
-			return fmt.Errorf("failed to set link UP on %s: %v", hostIfaceName, err)
+			return "", fmt.Errorf("failed to set link UP on %s: %v", hostIfaceName, err)
 		}
 	}
 
 	if ifInfo.Ingress > 0 || ifInfo.Egress > 0 {
 		err = netlink.LinkSetTxQLen(link, 1000)
 		if err != nil {
-			return fmt.Errorf("failed to set host veth txqlen: %v", err)
+			return "", fmt.Errorf("failed to set host veth txqlen: %v", err)
 		}
 
 		if err := setPodBandwidth(sandboxID, hostIfaceName, ifInfo.Ingress, ifInfo.Egress); err != nil {
-			return err
+			return "", err
 		}
 	}
 
+	return ifaceID, nil
+}
+
+// ConfigureOVS performs OVS configurations in order to set up Pod networking:
+// creates the OVS port and waits for ovn-controller to bind it.
+func ConfigureOVS(ctx context.Context, namespace, podName, podIfName, hostIfaceName string,
+	ifInfo *PodInterfaceInfo, sandboxID, deviceID string, isVFIO bool, getter PodInfoGetter) error {
+
+	ifaceID, err := addOVSPort(ctx, namespace, podName, podIfName, hostIfaceName, ifInfo, sandboxID, deviceID, isVFIO)
+	if err != nil {
+		return err
+	}
+
 	if err := waitForPodInterface(ctx, ifInfo, hostIfaceName, ifaceID, getter,
-		namespace, podName, initialPodUID); err != nil {
-		// Ensure the error shows up in node logs, rather than just
-		// being reported back to the runtime.
-		klog.Warningf("[%s/%s %s] pod uid %s: %v", namespace, podName, sandboxID, initialPodUID, err)
+		namespace, podName, ifInfo.PodUID); err != nil {
+		klog.Warningf("[%s/%s %s] pod uid %s: %v", namespace, podName, sandboxID, ifInfo.PodUID, err)
 		return err
 	}
 	return nil
 }
 
 type PodRequestInterfaceOps interface {
-	ConfigureInterface(pr *PodRequest, getter PodInfoGetter, ifInfo *PodInterfaceInfo) ([]*current.Interface, error)
+	ConfigureInterfaces(getter PodInfoGetter, requests ...InterfaceRequest) ([]*current.Interface, error)
 	UnconfigureInterface(pr *PodRequest, ifInfo *PodInterfaceInfo) error
 }
 
@@ -700,84 +711,152 @@ type defaultPodRequestInterfaceOps struct{}
 
 var podRequestInterfaceOps PodRequestInterfaceOps = &defaultPodRequestInterfaceOps{}
 
-// ConfigureInterface sets up the container interface
-func (*defaultPodRequestInterfaceOps) ConfigureInterface(pr *PodRequest, getter PodInfoGetter, ifInfo *PodInterfaceInfo) ([]*current.Interface, error) {
-	netns, err := ns.GetNS(pr.Netns)
+// ifaceSetupResult holds the results from setting up a single network interface.
+type ifaceSetupResult struct {
+	req       InterfaceRequest
+	hostIface *current.Interface
+	contIface *current.Interface
+	ifaceID   string
+}
+
+// ConfigureInterfaces sets up container interfaces for all networks in batched
+// phases to minimize netns transitions and allow parallel OVS binding waits.
+func (*defaultPodRequestInterfaceOps) ConfigureInterfaces(getter PodInfoGetter, requests ...InterfaceRequest) ([]*current.Interface, error) {
+	if len(requests) == 0 {
+		return nil, nil
+	}
+
+	first := requests[0].PR
+	netns, err := ns.GetNS(first.Netns)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open netns %q: %v", pr.Netns, err)
+		return nil, fmt.Errorf("failed to open netns %q: %v", first.Netns, err)
 	}
 	defer netns.Close()
 
-	var hostIface, contIface *current.Interface
+	// Phase 1: create all veth pairs and configure networking in a single netns entry.
+	results := make([]ifaceSetupResult, 0, len(requests))
+	for _, req := range requests {
+		var hostIface, contIface *current.Interface
 
-	klog.V(5).Infof("CNI Conf %v", pr.CNIConf)
-	if pr.CNIConf.DeviceID != "" {
-		// SR-IOV Case
-		hostIface, contIface, err = setupSriovInterface(netns, pr.SandboxID, pr.IfName, ifInfo, pr.CNIConf.DeviceID, pr.IsVFIO)
-	} else {
-		if ifInfo.IsDPUHostMode {
-			return nil, fmt.Errorf("unexpected configuration, pod request on dpu host. " +
-				"device ID must be provided")
+		klog.V(5).Infof("CNI Conf %v (network %s)", req.PR.CNIConf, req.IfInfo.NetName)
+		if req.PR.CNIConf.DeviceID != "" {
+			hostIface, contIface, err = setupSriovInterface(netns, req.PR.SandboxID, req.PR.IfName, req.IfInfo, req.PR.CNIConf.DeviceID, req.PR.IsVFIO)
+		} else {
+			if req.IfInfo.IsDPUHostMode {
+				return nil, fmt.Errorf("unexpected configuration, pod request on dpu host. device ID must be provided")
+			}
+			hostIface, contIface, err = setupInterface(netns, req.PR.SandboxID, req.PR.IfName, req.IfInfo)
+		}
+		if err != nil {
+			return nil, err
 		}
 
-		// General case
-		hostIface, contIface, err = setupInterface(netns, pr.SandboxID, pr.IfName, ifInfo)
+		telemetry.Emit(telemetry.Event{
+			Event:   "cni_interface_configured",
+			Pod:     req.PR.PodNamespace + "/" + req.PR.PodName,
+			Network: req.IfInfo.NetName,
+		})
+
+		results = append(results, ifaceSetupResult{
+			req:       req,
+			hostIface: hostIface,
+			contIface: contIface,
+		})
 	}
-	if err != nil {
+
+	// Phase 2: add all OVS ports without waiting for ovn-controller binding.
+	var cleanupPorts []string
+	cleanup := func() {
+		for _, portName := range cleanupPorts {
+			first.deletePort(portName, first.PodNamespace, first.PodName)
+		}
+	}
+
+	for i := range results {
+		r := &results[i]
+		if r.req.IfInfo.IsDPUHostMode {
+			continue
+		}
+
+		r.ifaceID, err = addOVSPort(r.req.PR.ctx, r.req.PR.PodNamespace, r.req.PR.PodName,
+			r.req.PR.IfName, r.hostIface.Name, r.req.IfInfo, r.req.PR.SandboxID, r.req.PR.CNIConf.DeviceID, r.req.PR.IsVFIO)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		cleanupPorts = append(cleanupPorts, r.hostIface.Name)
+	}
+
+	// Phase 3: wait for ovn-controller to bind all ports in parallel.
+	g, ctx := errgroup.WithContext(first.ctx)
+	for i := range results {
+		r := &results[i]
+		if r.req.IfInfo.IsDPUHostMode || r.ifaceID == "" {
+			continue
+		}
+		g.Go(func() error {
+			if err := waitForPodInterface(ctx, r.req.IfInfo, r.hostIface.Name, r.ifaceID, getter,
+				r.req.PR.PodNamespace, r.req.PR.PodName, r.req.IfInfo.PodUID); err != nil {
+				klog.Warningf("[%s/%s %s] pod uid %s network %s: %v",
+					r.req.PR.PodNamespace, r.req.PR.PodName, r.req.PR.SandboxID, r.req.IfInfo.PodUID, r.req.IfInfo.NetName, err)
+				return err
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		cleanup()
 		return nil, err
 	}
 
-	telemetry.Emit(telemetry.Event{
-		Event:   "cni_interface_configured",
-		Pod:     pr.PodNamespace + "/" + pr.PodName,
-		Network: ifInfo.NetName,
-	})
-
-	if !ifInfo.IsDPUHostMode {
-		err = ConfigureOVS(pr.ctx, pr.PodNamespace, pr.PodName, pr.IfName, hostIface.Name, ifInfo, pr.SandboxID, pr.CNIConf.DeviceID, pr.IsVFIO, getter)
-		if err != nil {
-			pr.deletePort(hostIface.Name, pr.PodNamespace, pr.PodName)
-			return nil, err
+	// Phase 4: settle IPv6 addresses for all interfaces that need it.
+	type v6Settle struct {
+		contName string
+	}
+	var v6Settles []v6Settle
+	for _, r := range results {
+		if r.req.PR.IsVFIO {
+			continue
+		}
+		for _, ipNet := range r.req.IfInfo.IPs {
+			if ipNet.IP.To4() == nil {
+				v6Settles = append(v6Settles, v6Settle{contName: r.contIface.Name})
+				break
+			}
 		}
 	}
-
-	// Only configure IPv6 specific stuff and wait for addresses to become usable
-	// if there are any IPv6 addresses to assign. v4 doesn't have the concept
-	// of tentative addresses so it doesn't need any of this.
-	haveV6 := false
-	for _, ip := range ifInfo.IPs {
-		if ip.IP.To4() == nil {
-			haveV6 = true
-			break
-		}
-	}
-	if haveV6 && !pr.IsVFIO {
+	if len(v6Settles) > 0 {
 		err = netns.Do(func(_ ns.NetNS) error {
-			// deny IPv6 neighbor solicitations
-			dadSysctlIface := fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/dad_transmits", contIface.Name)
-			if _, err := os.Stat(dadSysctlIface); !os.IsNotExist(err) {
-				err = setSysctl(dadSysctlIface, 0)
-				if err != nil {
-					klog.Warningf("Failed to disable IPv6 DAD: %q", err)
+			for _, s := range v6Settles {
+				dadSysctlIface := fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/dad_transmits", s.contName)
+				if _, err := os.Stat(dadSysctlIface); !os.IsNotExist(err) {
+					if err := setSysctl(dadSysctlIface, 0); err != nil {
+						klog.Warningf("Failed to disable IPv6 DAD on %s: %q", s.contName, err)
+					}
+				}
+				genSysctlIface := fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/addr_gen_mode", s.contName)
+				if _, err := os.Stat(genSysctlIface); !os.IsNotExist(err) {
+					if err := setSysctl(genSysctlIface, 0); err != nil {
+						klog.Warningf("Failed to set IPv6 addr_gen_mode on %s: %q", s.contName, err)
+					}
+				}
+				if err := ip.SettleAddresses(s.contName, 10*time.Second); err != nil {
+					klog.Warningf("Failed to settle IPv6 addresses on %s: %q", s.contName, err)
 				}
 			}
-			// generate address based on EUI64
-			genSysctlIface := fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/addr_gen_mode", contIface.Name)
-			if _, err := os.Stat(genSysctlIface); !os.IsNotExist(err) {
-				err = setSysctl(genSysctlIface, 0)
-				if err != nil {
-					klog.Warningf("Failed to set IPv6 address generation mode to EUI64: %q", err)
-				}
-			}
-
-			return ip.SettleAddresses(contIface.Name, 10*time.Second)
+			return nil
 		})
 		if err != nil {
-			klog.Warningf("Failed to settle addresses: %q", err)
+			klog.Warningf("Failed to settle IPv6 addresses: %q", err)
 		}
 	}
 
-	return []*current.Interface{hostIface, contIface}, nil
+	// Build merged result: [host0, cont0, host1, cont1, ...]
+	allIfaces := make([]*current.Interface, 0, len(results)*2)
+	for _, r := range results {
+		allIfaces = append(allIfaces, r.hostIface, r.contIface)
+	}
+	return allIfaces, nil
 }
 
 func (*defaultPodRequestInterfaceOps) UnconfigureInterface(pr *PodRequest, ifInfo *PodInterfaceInfo) error {

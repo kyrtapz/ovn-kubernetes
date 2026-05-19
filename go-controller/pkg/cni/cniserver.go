@@ -15,7 +15,6 @@ import (
 	"time"
 
 	cnitypes "github.com/containernetworking/cni/pkg/types"
-	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/gorilla/mux"
 	nadv1Listers "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/listers/k8s.cni.cncf.io/v1"
 	nadutils "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/utils"
@@ -331,27 +330,42 @@ func (s *Server) handleCNIRequest(r *http.Request) (result []byte, err error) {
 		return nil, err
 	}
 
-	// check if this is a default network request for a pod with primary UDN
-	// and create a primary interface if so
 	if request.Command == CNIAdd {
-		// We don't do anything extra for CNIDel, because UnconfigureInterface already deletes all ports
-		// for a given pod from OVS, also some other cleanup are done in batch in cmdDel
 		primaryPodRequest, err := s.getPrimaryUDNPodRequest(request)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get primary UDN pod request: %v", err)
 		}
-		if primaryPodRequest != nil {
-			klog.V(4).Infof("Pod %s/%s primaryUDN podRequest %v", primaryPodRequest.PodNamespace, primaryPodRequest.PodName, primaryPodRequest)
-			primaryResponse, err := primaryPodRequest.cmdAdd(s.kubeAuth, s.clientSet, s.ovsClient)
-			if err != nil {
-				return nil, fmt.Errorf("failed to add primary UDN pod request: %v", err)
-			}
-			// merge primary response into the original response
-			mergePrimaryUDNResponse(response, primaryResponse, primaryPodRequest)
-		}
-	}
 
-	if request.Command == CNIAdd {
+		if !config.UnprivilegedMode {
+			// Privileged mode: batch all networks into a single getCNIResult
+			// call so OVS ports are created together and binding waits run
+			// in parallel via errgroup.
+			ifaceRequests := []InterfaceRequest{{PR: request, IfInfo: response.PodIFInfo}}
+			if primaryPodRequest != nil {
+				klog.V(4).Infof("Pod %s/%s primaryUDN podRequest %v", primaryPodRequest.PodNamespace, primaryPodRequest.PodName, primaryPodRequest)
+				primaryResponse, err := primaryPodRequest.cmdAdd(s.kubeAuth, s.clientSet, s.ovsClient)
+				if err != nil {
+					return nil, fmt.Errorf("failed to add primary UDN pod request: %v", err)
+				}
+				ifaceRequests = append(ifaceRequests, InterfaceRequest{PR: primaryPodRequest, IfInfo: primaryResponse.PodIFInfo})
+			}
+			response.Result, err = getCNIResult(s.clientSet, ifaceRequests...)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Unprivileged mode: attach primary UDN info for cnishim to batch.
+			if primaryPodRequest != nil {
+				klog.V(4).Infof("Pod %s/%s primaryUDN podRequest %v", primaryPodRequest.PodNamespace, primaryPodRequest.PodName, primaryPodRequest)
+				primaryResponse, err := primaryPodRequest.cmdAdd(s.kubeAuth, s.clientSet, s.ovsClient)
+				if err != nil {
+					return nil, fmt.Errorf("failed to add primary UDN pod request: %v", err)
+				}
+				response.PrimaryUDNPodReq = primaryPodRequest
+				response.PrimaryUDNPodInfo = primaryResponse.PodIFInfo
+			}
+		}
+
 		cniDuration := time.Since(cniStart)
 		klog.Infof("Pod setup step completed: step=cni_complete pod=%s/%s network=%s elapsed_ms=%.1f",
 			request.PodNamespace, request.PodName, request.netName, float64(cniDuration.Microseconds())/1000.0)
@@ -453,32 +467,6 @@ func (s *Server) getPrimaryUDNPodRequest(originalPodRequest *PodRequest) (*PodRe
 	return primaryPodRequest, nil
 }
 
-func mergePrimaryUDNResponse(originalResponse, primaryResponse *Response, primaryPodRequest *PodRequest) {
-	// merge primary response into the original response
-	if originalResponse == nil || primaryResponse == nil {
-		return
-	}
-	if !config.UnprivilegedMode {
-		result := originalResponse.Result
-		primaryUDNResult := primaryResponse.Result
-		result.Routes = append(result.Routes, primaryUDNResult.Routes...)
-		numOfInitialIPs := len(result.IPs)
-		numOfInitialIfaces := len(result.Interfaces)
-		result.Interfaces = append(result.Interfaces, primaryUDNResult.Interfaces...)
-		result.IPs = append(result.IPs, primaryUDNResult.IPs...)
-
-		// Offset the index of the default network IPs to correctly point to the default network interfaces
-		for i := numOfInitialIPs; i < len(result.IPs); i++ {
-			ifaceIPConfig := result.IPs[i].Copy()
-			if result.IPs[i].Interface != nil {
-				result.IPs[i].Interface = current.Int(*ifaceIPConfig.Interface + numOfInitialIfaces)
-			}
-		}
-	} else {
-		originalResponse.PrimaryUDNPodReq = primaryPodRequest
-		originalResponse.PrimaryUDNPodInfo = primaryResponse.PodIFInfo
-	}
-}
 
 func (s *Server) handleCNIMetrics(w http.ResponseWriter, r *http.Request) {
 	var cm CNIRequestMetrics

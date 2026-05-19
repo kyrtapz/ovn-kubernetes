@@ -227,14 +227,8 @@ func (pr *PodRequest) cmdAdd(kubeAuth *KubeAPIAuth, clientset *ClientSet, ovsCli
 				return nil, fmt.Errorf("failed bridge mapping validation: %w", err)
 			}
 		}
-
-		response.Result, err = getCNIResult(pr, clientset, podInterfaceInfo)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		response.PodIFInfo = podInterfaceInfo
 	}
+	response.PodIFInfo = podInterfaceInfo
 	return response, nil
 }
 
@@ -361,46 +355,50 @@ func (pr *PodRequest) cmdDel(clientset *ClientSet) (*Response, error) {
 	return response, nil
 }
 
-// getCNIResult get result from pod interface info.
-// PodInfoGetter is used to check if sandbox is still valid for the current
-// instance of the pod in the apiserver, see checkCancelSandbox for more info.
-// If kube api is not available from the CNI, pass nil to skip this check.
-func getCNIResult(pr *PodRequest, getter PodInfoGetter, podInterfaceInfo *PodInterfaceInfo) (*current.Result, error) {
-	interfacesArray, err := podRequestInterfaceOps.ConfigureInterface(pr, getter, podInterfaceInfo)
+// getCNIResult configures all requested network interfaces and builds a merged
+// CNI result. All interfaces are set up in batched phases (veth creation, OVS
+// port addition, parallel binding wait) via ConfigureInterfaces.
+func getCNIResult(getter PodInfoGetter, requests ...InterfaceRequest) (*current.Result, error) {
+	interfacesArray, err := podRequestInterfaceOps.ConfigureInterfaces(getter, requests...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure pod interface: %v", err)
 	}
 
-	gateways := map[string]net.IP{}
-	for _, gw := range podInterfaceInfo.Gateways {
-		if gw.To4() != nil && gateways["4"] == nil {
-			gateways["4"] = gw
-		} else if gw.To4() == nil && gateways["6"] == nil {
-			gateways["6"] = gw
+	result := &current.Result{}
+	ifaceOffset := 0
+	for _, req := range requests {
+		ifInfo := req.IfInfo
+
+		gateways := map[string]net.IP{}
+		for _, gw := range ifInfo.Gateways {
+			if gw.To4() != nil && gateways["4"] == nil {
+				gateways["4"] = gw
+			} else if gw.To4() == nil && gateways["6"] == nil {
+				gateways["6"] = gw
+			}
 		}
+
+		for _, ipcidr := range ifInfo.IPs {
+			ip := &current.IPConfig{
+				// container interface is at ifaceOffset+1 (host=ifaceOffset, cont=ifaceOffset+1)
+				Interface: current.Int(ifaceOffset + 1),
+				Address:   *ipcidr,
+			}
+			var ipVersion string
+			if utilnet.IsIPv6CIDR(ipcidr) {
+				ipVersion = "6"
+			} else {
+				ipVersion = "4"
+			}
+			ip.Gateway = gateways[ipVersion]
+			result.IPs = append(result.IPs, ip)
+		}
+
+		ifaceOffset += 2 // host + container per network
 	}
 
-	// Build the result structure to pass back to the runtime
-	ips := []*current.IPConfig{}
-	for _, ipcidr := range podInterfaceInfo.IPs {
-		ip := &current.IPConfig{
-			Interface: current.Int(1),
-			Address:   *ipcidr,
-		}
-		var ipVersion string
-		if utilnet.IsIPv6CIDR(ipcidr) {
-			ipVersion = "6"
-		} else {
-			ipVersion = "4"
-		}
-		ip.Gateway = gateways[ipVersion]
-		ips = append(ips, ip)
-	}
-
-	return &current.Result{
-		Interfaces: interfacesArray,
-		IPs:        ips,
-	}, nil
+	result.Interfaces = interfacesArray
+	return result, nil
 }
 
 func (pr *PodRequest) buildPodInterfaceInfo(annotations map[string]string, podAnnotation *util.PodAnnotation, netDevice string) (*PodInterfaceInfo, error) {
