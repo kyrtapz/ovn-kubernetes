@@ -179,13 +179,21 @@ func TestCmdAdd_UnprivilegedMode(t *testing.T) {
 			t.Fatalf("failed to unmarshal output: %v", err)
 		}
 
-		// Expected output includes both interfaces wired by CNIShim
+		// Expected output includes both interfaces wired by CNIShim.
+		// Each network produces a host+container pair, so 4 interfaces total.
+		// Container-side indices: default=1, UDN=3
 		expected := `{
   "cniVersion": "1.1.0",
   "interfaces": [
     {
+      "name": "eth0"
+    },
+    {
       "name": "eth0",
       "sandbox": "/var/run/netns/test-ns_test-pod"
+    },
+    {
+      "name": "dummy1"
     },
     {
       "name": "dummy1",
@@ -195,8 +203,8 @@ func TestCmdAdd_UnprivilegedMode(t *testing.T) {
   "ips": [
     { "address": "100.10.10.3/24", "interface": 1 },
     { "address": "fd44::33/64", "interface": 1 },
-    { "address": "10.10.10.30/24", "interface": 2 },
-    { "address": "fd10::3/64", "interface": 2 }
+    { "address": "10.10.10.30/24", "interface": 3 },
+    { "address": "fd10::3/64", "interface": 3 }
   ]
 }`
 

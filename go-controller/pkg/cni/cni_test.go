@@ -37,16 +37,23 @@ type podRequestInterfaceOpsStub struct {
 	unconfiguredInterfaces []*PodInterfaceInfo
 }
 
-func (stub *podRequestInterfaceOpsStub) ConfigureInterface(pr *PodRequest, _ PodInfoGetter, pii *PodInterfaceInfo) ([]*current.Interface, error) {
-	if len(pii.IPs) > 0 {
-		return []*current.Interface{
-			{
-				Name:    pr.IfName,
-				Sandbox: "/var/run/netns/" + pr.PodNamespace + "_" + pr.PodName,
-			},
-		}, nil
+func (stub *podRequestInterfaceOpsStub) ConfigureInterfaces(_ PodInfoGetter, requests ...InterfaceRequest) ([]*current.Interface, error) {
+	var result []*current.Interface
+	for _, req := range requests {
+		if len(req.IfInfo.IPs) > 0 {
+			result = append(result,
+				&current.Interface{
+					Name:    req.PR.IfName,
+					Sandbox: "",
+				},
+				&current.Interface{
+					Name:    req.PR.IfName,
+					Sandbox: "/var/run/netns/" + req.PR.PodNamespace + "_" + req.PR.PodName,
+				},
+			)
+		}
 	}
-	return nil, nil
+	return result, nil
 }
 func (stub *podRequestInterfaceOpsStub) UnconfigureInterface(_ *PodRequest, ifInfo *PodInterfaceInfo) error {
 	stub.unconfiguredInterfaces = append(stub.unconfiguredInterfaces, ifInfo)
@@ -64,8 +71,10 @@ var _ = Describe("Network Segmentation", func() {
 		clientSet                *ClientSet
 		kubeAuth                 *KubeAPIAuth
 		obtainedPodIterfaceInfos []*PodInterfaceInfo
-		getCNIResultStub         = func(_ *PodRequest, _ PodInfoGetter, podInterfaceInfo *PodInterfaceInfo) (*current.Result, error) {
-			obtainedPodIterfaceInfos = append(obtainedPodIterfaceInfos, podInterfaceInfo)
+		getCNIResultStub         = func(_ PodInfoGetter, requests ...InterfaceRequest) (*current.Result, error) {
+			for _, req := range requests {
+				obtainedPodIterfaceInfos = append(obtainedPodIterfaceInfos, req.IfInfo)
+			}
 			return &current.Result{}, nil
 		}
 		prInterfaceOpsStub *podRequestInterfaceOpsStub
@@ -221,37 +230,37 @@ var _ = Describe("Network Segmentation", func() {
 
 			var fakeNetworkManager *networkmanager.FakeNetworkManager
 
-			dummyGetCNIResult := func(request *PodRequest, _ PodInfoGetter, podInterfaceInfo *PodInterfaceInfo) (*current.Result, error) {
-				var gatewayIP net.IP
-				if len(podInterfaceInfo.Gateways) > 0 {
-					gatewayIP = podInterfaceInfo.Gateways[0]
+			dummyGetCNIResult := func(_ PodInfoGetter, requests ...InterfaceRequest) (*current.Result, error) {
+				result := &current.Result{CNIVersion: "0.3.1"}
+				ifaceOffset := 0
+				for _, req := range requests {
+					podInterfaceInfo := req.IfInfo
+					var gatewayIP net.IP
+					if len(podInterfaceInfo.Gateways) > 0 {
+						gatewayIP = podInterfaceInfo.Gateways[0]
+					}
+					contIdx := ifaceOffset + 1
+					for _, ip := range podInterfaceInfo.IPs {
+						result.IPs = append(result.IPs, &current.IPConfig{Address: *ip, Gateway: gatewayIP, Interface: &contIdx})
+					}
+					ifaceName := "eth0"
+					if req.PR.netName != "default" {
+						ifaceName = "ovn-udn1"
+					}
+					result.Interfaces = append(result.Interfaces,
+						&current.Interface{
+							Name: "host_" + ifaceName,
+							Mac:  dummyMACHostSide,
+						},
+						&current.Interface{
+							Name:    ifaceName,
+							Mac:     podInterfaceInfo.MAC.String(),
+							Sandbox: "bobloblaw",
+						},
+					)
+					ifaceOffset += 2
 				}
-				var ips []*current.IPConfig
-				ifaceIdx := 1 // host side of the veth is 0; pod side of the veth is 1
-				for _, ip := range podInterfaceInfo.IPs {
-					ips = append(ips, &current.IPConfig{Address: *ip, Gateway: gatewayIP, Interface: &ifaceIdx})
-				}
-				ifaceName := "eth0"
-				if request.netName != "default" {
-					ifaceName = "ovn-udn1"
-				}
-
-				interfaces := []*current.Interface{
-					{
-						Name: "host_" + ifaceName,
-						Mac:  dummyMACHostSide,
-					},
-					{
-						Name:    ifaceName,
-						Mac:     podInterfaceInfo.MAC.String(),
-						Sandbox: "bobloblaw",
-					},
-				}
-				return &current.Result{
-					CNIVersion: "0.3.1",
-					Interfaces: interfaces,
-					IPs:        ips,
-				}, nil
+				return result, nil
 			}
 
 			BeforeEach(func() {

@@ -190,7 +190,13 @@ type PodRequest struct {
 }
 
 type podRequestFunc func(request *PodRequest, clientset *ClientSet, kubeAuth *KubeAPIAuth, networkManager networkmanager.Interface, ovsClient client.Client) ([]byte, error)
-type getCNIResultFunc func(request *PodRequest, getter PodInfoGetter, podInterfaceInfo *PodInterfaceInfo) (*current.Result, error)
+// InterfaceRequest pairs a PodRequest with its PodInterfaceInfo for a single network.
+type InterfaceRequest struct {
+	PR     *PodRequest
+	IfInfo *PodInterfaceInfo
+}
+
+type getCNIResultFunc func(getter PodInfoGetter, requests ...InterfaceRequest) (*current.Result, error)
 
 type PodInfoGetter interface {
 	getPod(namespace, name string) (*corev1.Pod, error)

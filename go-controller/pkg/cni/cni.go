@@ -305,15 +305,13 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(
 			}
 		}
 
-		response.Result, err = getCNIResultFn(pr, clientset, podInterfaceInfo)
+		ifaceRequests := []InterfaceRequest{{PR: pr, IfInfo: podInterfaceInfo}}
+		if primaryUDNPodRequest != nil {
+			ifaceRequests = append(ifaceRequests, InterfaceRequest{PR: primaryUDNPodRequest, IfInfo: primaryUDNPodInfo})
+		}
+		response.Result, err = getCNIResultFn(clientset, ifaceRequests...)
 		if err != nil {
 			return nil, err
-		}
-		if primaryUDNPodRequest != nil {
-			err = primaryUDNCmdAddGetCNIResultFunc(response.Result, getCNIResultFn, primaryUDNPodRequest, clientset, primaryUDNPodInfo)
-			if err != nil {
-				return nil, err
-			}
 		}
 	} else {
 		response.PodIFInfo = podInterfaceInfo
@@ -324,29 +322,6 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(
 	}
 
 	return response, nil
-}
-
-func primaryUDNCmdAddGetCNIResultFunc(result *current.Result, getCNIResultFn getCNIResultFunc, primaryUDNPodRequest *PodRequest,
-	clientset PodInfoGetter, primaryUDNPodInfo *PodInterfaceInfo) error {
-	primaryUDNResult, err := getCNIResultFn(primaryUDNPodRequest, clientset, primaryUDNPodInfo)
-	if err != nil {
-		return err
-	}
-
-	result.Routes = append(result.Routes, primaryUDNResult.Routes...)
-	numOfInitialIPs := len(result.IPs)
-	numOfInitialIfaces := len(result.Interfaces)
-	result.Interfaces = append(result.Interfaces, primaryUDNResult.Interfaces...)
-	result.IPs = append(result.IPs, primaryUDNResult.IPs...)
-
-	// Offset the index of the default network IPs to correctly point to the default network interfaces
-	for i := numOfInitialIPs; i < len(result.IPs); i++ {
-		ifaceIPConfig := result.IPs[i].Copy()
-		if result.IPs[i].Interface != nil {
-			result.IPs[i].Interface = current.Int(*ifaceIPConfig.Interface + numOfInitialIfaces)
-		}
-	}
-	return nil
 }
 
 func (pr *PodRequest) cmdDel(clientset *ClientSet) (*Response, error) {
@@ -548,46 +523,50 @@ func HandlePodRequest(
 	return result, nil
 }
 
-// getCNIResult get result from pod interface info.
-// PodInfoGetter is used to check if sandbox is still valid for the current
-// instance of the pod in the apiserver, see checkCancelSandbox for more info.
-// If kube api is not available from the CNI, pass nil to skip this check.
-func getCNIResult(pr *PodRequest, getter PodInfoGetter, podInterfaceInfo *PodInterfaceInfo) (*current.Result, error) {
-	interfacesArray, err := podRequestInterfaceOps.ConfigureInterface(pr, getter, podInterfaceInfo)
+// getCNIResult configures all requested network interfaces and builds a merged
+// CNI result. All interfaces are set up in batched phases (veth creation, OVS
+// port addition, parallel binding wait) via ConfigureInterfaces.
+func getCNIResult(getter PodInfoGetter, requests ...InterfaceRequest) (*current.Result, error) {
+	interfacesArray, err := podRequestInterfaceOps.ConfigureInterfaces(getter, requests...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure pod interface: %v", err)
 	}
 
-	gateways := map[string]net.IP{}
-	for _, gw := range podInterfaceInfo.Gateways {
-		if gw.To4() != nil && gateways["4"] == nil {
-			gateways["4"] = gw
-		} else if gw.To4() == nil && gateways["6"] == nil {
-			gateways["6"] = gw
+	result := &current.Result{}
+	ifaceOffset := 0
+	for _, req := range requests {
+		ifInfo := req.IfInfo
+
+		gateways := map[string]net.IP{}
+		for _, gw := range ifInfo.Gateways {
+			if gw.To4() != nil && gateways["4"] == nil {
+				gateways["4"] = gw
+			} else if gw.To4() == nil && gateways["6"] == nil {
+				gateways["6"] = gw
+			}
 		}
+
+		for _, ipcidr := range ifInfo.IPs {
+			ip := &current.IPConfig{
+				// container interface is at ifaceOffset+1 (host=ifaceOffset, cont=ifaceOffset+1)
+				Interface: current.Int(ifaceOffset + 1),
+				Address:   *ipcidr,
+			}
+			var ipVersion string
+			if utilnet.IsIPv6CIDR(ipcidr) {
+				ipVersion = "6"
+			} else {
+				ipVersion = "4"
+			}
+			ip.Gateway = gateways[ipVersion]
+			result.IPs = append(result.IPs, ip)
+		}
+
+		ifaceOffset += 2 // host + container per network
 	}
 
-	// Build the result structure to pass back to the runtime
-	ips := []*current.IPConfig{}
-	for _, ipcidr := range podInterfaceInfo.IPs {
-		ip := &current.IPConfig{
-			Interface: current.Int(1),
-			Address:   *ipcidr,
-		}
-		var ipVersion string
-		if utilnet.IsIPv6CIDR(ipcidr) {
-			ipVersion = "6"
-		} else {
-			ipVersion = "4"
-		}
-		ip.Gateway = gateways[ipVersion]
-		ips = append(ips, ip)
-	}
-
-	return &current.Result{
-		Interfaces: interfacesArray,
-		IPs:        ips,
-	}, nil
+	result.Interfaces = interfacesArray
+	return result, nil
 }
 
 // buildPrimaryUDNPodRequest returns PodRequest for primary UDN interface,
