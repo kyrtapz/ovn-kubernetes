@@ -317,7 +317,7 @@ func (udng *UserDefinedNetworkGateway) AddNetwork() error {
 			return true, nil
 		}
 		postFunc := func() error {
-			if err := udng.gateway.Reconcile(); err != nil {
+			if err := udng.gateway.reconcileFlows(); err != nil {
 				return fmt.Errorf("failed to reconcile flows on bridge for network %s; error: %v", udng.GetNetworkName(), err)
 			}
 			return nil
@@ -335,7 +335,7 @@ func (udng *UserDefinedNetworkGateway) AddNetwork() error {
 			Elapsed: float64(patchWaitDuration.Microseconds()) / 1000.0,
 		})
 	} else {
-		if err := udng.gateway.Reconcile(); err != nil {
+		if err := udng.gateway.reconcileFlows(); err != nil {
 			return fmt.Errorf("failed to reconcile flows on bridge for network %s; error: %v", udng.GetNetworkName(), err)
 		}
 	}
@@ -379,7 +379,7 @@ func (udng *UserDefinedNetworkGateway) DelNetwork() error {
 		}
 	}
 	if udng.openflowManager != nil || config.IsModeDPUHost() {
-		if err := udng.gateway.Reconcile(); err != nil {
+		if err := udng.gateway.reconcileFlows(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to reconcile default gateway for network %s, err: %v", udng.GetNetworkName(), err))
 		}
 	}

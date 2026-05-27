@@ -259,7 +259,7 @@ func (g *gateway) AddEgressIP(eip *egressipv1.EgressIP) error {
 		return err
 	}
 	if isSyncRequired {
-		if err = g.Reconcile(); err != nil {
+		if err = g.reconcileFlows(); err != nil {
 			return fmt.Errorf("failed to sync gateway: %v", err)
 		}
 	}
@@ -275,7 +275,7 @@ func (g *gateway) UpdateEgressIP(oldEIP, newEIP *egressipv1.EgressIP) error {
 		return err
 	}
 	if isSyncRequired {
-		if err = g.Reconcile(); err != nil {
+		if err = g.reconcileFlows(); err != nil {
 			return fmt.Errorf("failed to sync gateway: %v", err)
 		}
 	}
@@ -291,7 +291,7 @@ func (g *gateway) DeleteEgressIP(eip *egressipv1.EgressIP) error {
 		return err
 	}
 	if isSyncRequired {
-		if err = g.Reconcile(); err != nil {
+		if err = g.reconcileFlows(); err != nil {
 			return fmt.Errorf("failed to sync gateway: %v", err)
 		}
 	}
@@ -305,7 +305,7 @@ func (g *gateway) SyncEgressIP(eips []interface{}) error {
 	if err := g.bridgeEIPAddrManager.SyncEgressIP(eips); err != nil {
 		return err
 	}
-	if err := g.Reconcile(); err != nil {
+	if err := g.reconcileFlows(); err != nil {
 		return fmt.Errorf("failed to sync gateway: %v", err)
 	}
 	return nil
@@ -530,9 +530,11 @@ func (g *gateway) SetDefaultBridgeGARPDropFlows(isDropped bool) {
 	g.openflowManager.setDefaultBridgeGARPDrop(isDropped)
 }
 
-// Reconcile handles triggering updates to different components of a gateway, like OFM, Services
-func (g *gateway) Reconcile() error {
-	klog.Info("Reconciling gateway with updates")
+// reconcileFlows updates OpenFlow bridge flows and SNAT rules without
+// resyncing all services. Use this when the change does not affect service
+// flows (e.g. UDN add/delete, EgressIP changes).
+func (g *gateway) reconcileFlows() error {
+	klog.Info("Reconciling gateway flows")
 	if config.IsModeDPU() || config.IsModeFull() {
 		if g.openflowManager != nil {
 			if g.nodeIPManager == nil {
@@ -541,24 +543,28 @@ func (g *gateway) Reconcile() error {
 				if err := g.openflowManager.updateBridgeFlowCache(g.nodeIPManager.ListAddresses()); err != nil {
 					return err
 				}
-				// let's sync these flows immediately
 				g.openflowManager.requestFlowSync()
 			}
 		}
 	}
-	// TBD updateSNATRules() gets node host-cidr by accessing gateway.nodeIPManager, which does not
-	// exist in dpu-host mode.
 	if config.IsModeFull() {
-		err := g.updateSNATRules()
-		if err != nil {
+		if err := g.updateSNATRules(); err != nil {
 			return err
 		}
 	}
-	// Services create OpenFlow flows as well, need to update them all
+	return nil
+}
+
+// Reconcile updates OpenFlow flows, SNAT rules, and resyncs all services.
+// Only needed when gateway attributes that affect service flows change
+// (MAC address, node IP, network advertising status).
+func (g *gateway) Reconcile() error {
+	if err := g.reconcileFlows(); err != nil {
+		return err
+	}
 	if g.servicesRetryFramework != nil {
 		if errs := g.addAllServices(); errs != nil {
-			err := utilerrors.Join(errs...)
-			return err
+			return utilerrors.Join(errs...)
 		}
 	}
 	return nil
