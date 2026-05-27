@@ -106,13 +106,37 @@ func NewController(wf *factory.WatchFactory, name string, networkManager network
 		Informer:       nodeInformer.Informer(),
 		Lister:         nodeInformer.Lister().List,
 		MaxAttempts:    controller.InfiniteAttempts,
-		ObjNeedsUpdate: func(_, _ *corev1.Node) bool { return true },
+		ObjNeedsUpdate: nodeNeedsUpdate,
 		Reconcile:      c.reconcileNode,
 		Threadiness:    15,
 	}
 	c.nodeController = controller.NewController(c.name+"-node", nodeControllerConfig)
 
 	return c
+}
+
+// nodeAnnotationKeys lists the annotation keys that the node controller
+// reconciles. Changes to any other annotation or to node status are ignored.
+var nodeAnnotationKeys = []string{
+	util.OvnNetworkIDs,
+	types.UDNLayer2NodeGRLRPTunnelIDAnnotation,
+	util.OvnNodeL3GatewayConfig,
+	types.NodeSubnetsAnnotation,
+}
+
+// nodeNeedsUpdate returns true when the node annotations that the controller
+// cares about have changed. Status-only updates (heartbeats, conditions) are
+// filtered out.
+func nodeNeedsUpdate(old, new *corev1.Node) bool {
+	if old == nil || new == nil {
+		return true
+	}
+	for _, key := range nodeAnnotationKeys {
+		if old.Annotations[key] != new.Annotations[key] {
+			return true
+		}
+	}
+	return false
 }
 
 // NewNodeController builds a controller that handles node events for all UDNs.
