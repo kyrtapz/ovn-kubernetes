@@ -100,17 +100,13 @@ func (cm *ControllerManager) NewNetworkController(nInfo util.NetInfo) (networkma
 		}
 		if cm.nsResourceDispatcher != nil {
 			dispatcher := cm.nsResourceDispatcher
-			oc.InitDispatcherControllers(
-				func(namespaces []string) {
-					dispatcher.AddControllers(namespaces, &NamespacedResourceControllers{
-						Pod:       oc.GetPodCtrl(),
-						Namespace: oc.GetNamespaceCtrl(),
-						NetPol:    oc.GetNetPolCtrl(),
-					})
-				},
-				dispatcher.GetPendingDelete,
-				dispatcher.DeletePendingDelete,
-			)
+			oc.InitDispatcherControllers(func(namespaces []string) {
+				dispatcher.AddControllers(namespaces, &NamespacedResourceControllers{
+					Pod:       oc.GetPodCtrl(),
+					Namespace: oc.GetNamespaceCtrl(),
+					NetPol:    oc.GetNetPolCtrl(),
+				})
+			})
 		}
 		return oc, nil
 	case ovntypes.Layer2Topology:
@@ -121,17 +117,13 @@ func (cm *ControllerManager) NewNetworkController(nInfo util.NetInfo) (networkma
 		}
 		if cm.nsResourceDispatcher != nil {
 			dispatcher := cm.nsResourceDispatcher
-			oc.InitDispatcherControllers(
-				func(namespaces []string) {
-					dispatcher.AddControllers(namespaces, &NamespacedResourceControllers{
-						Pod:       oc.GetPodCtrl(),
-						Namespace: oc.GetNamespaceCtrl(),
-						NetPol:    oc.GetNetPolCtrl(),
-					})
-				},
-				dispatcher.GetPendingDelete,
-				dispatcher.DeletePendingDelete,
-			)
+			oc.InitDispatcherControllers(func(namespaces []string) {
+				dispatcher.AddControllers(namespaces, &NamespacedResourceControllers{
+					Pod:       oc.GetPodCtrl(),
+					Namespace: oc.GetNamespaceCtrl(),
+					NetPol:    oc.GetNetPolCtrl(),
+				})
+			})
 		}
 		return oc, nil
 	case ovntypes.LocalnetTopology:

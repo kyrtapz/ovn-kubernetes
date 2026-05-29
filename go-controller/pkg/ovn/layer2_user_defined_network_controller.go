@@ -241,10 +241,6 @@ type Layer2UserDefinedNetworkController struct {
 	// namespaced resource dispatcher for the given namespaces.
 	registerWithDispatcher func(namespaces []string)
 
-	// getPendingDelete peeks at a deleted pod object stored by the dispatcher.
-	getPendingDelete func(key string) *corev1.Pod
-	// deletePendingDelete removes a pending-delete entry after successful cleanup.
-	deletePendingDelete func(key string)
 }
 
 // NewLayer2UserDefinedNetworkController create a new OVN controller for the given layer2 NAD
@@ -764,12 +760,8 @@ func (oc *Layer2UserDefinedNetworkController) GetNetPolCtrl() controller.Reconci
 // start these controllers instead of registering via the retry framework.
 func (oc *Layer2UserDefinedNetworkController) InitDispatcherControllers(
 	registerWithDispatcher func(namespaces []string),
-	getPendingDelete func(key string) *corev1.Pod,
-	deletePendingDelete func(key string),
 ) {
 	oc.registerWithDispatcher = registerWithDispatcher
-	oc.getPendingDelete = getPendingDelete
-	oc.deletePendingDelete = deletePendingDelete
 
 	oc.podCtrl = controller.NewReconciler(
 		fmt.Sprintf("l2-pod-%s", oc.GetNetworkName()),
@@ -802,7 +794,7 @@ func (oc *Layer2UserDefinedNetworkController) InitDispatcherControllers(
 }
 
 func (oc *Layer2UserDefinedNetworkController) reconcilePod(key string) error {
-	err := oc.reconcilePodForUserDefinedNetwork(key, oc.getPendingDelete, oc.deletePendingDelete)
+	err := oc.reconcilePodForUserDefinedNetwork(key)
 	if err != nil {
 		return err
 	}

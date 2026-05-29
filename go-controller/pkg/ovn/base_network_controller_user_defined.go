@@ -655,38 +655,24 @@ func (bsnc *BaseUserDefinedNetworkController) hasIPAMClaim(pod *corev1.Pod, nadK
 
 // reconcilePodForUserDefinedNetwork is a level-driven reconcile function
 // for pods, suitable for use with the namespaced resource dispatcher.
-// getPendingDelete peeks at a deleted pod object stored by the dispatcher
-// (without consuming it); deletePendingDelete removes it after successful
-// cleanup.
-func (bsnc *BaseUserDefinedNetworkController) reconcilePodForUserDefinedNetwork(
-	key string,
-	getPendingDelete func(string) *corev1.Pod,
-	deletePendingDelete func(string),
-) error {
+// Handles add and update only — deletes stay on the per-controller retry
+// framework path (edge-driven) to preserve the pod object needed for cleanup.
+func (bsnc *BaseUserDefinedNetworkController) reconcilePodForUserDefinedNetwork(key string) error {
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
 	}
 
 	pod, err := bsnc.watchFactory.PodCoreInformer().Lister().Pods(namespace).Get(name)
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return err
 	}
 
-	if apierrors.IsNotFound(err) || pod == nil {
-		deletedPod := getPendingDelete(key)
-		if deletedPod == nil {
-			return nil
-		}
-		if err := bsnc.removePodForUserDefinedNetwork(deletedPod, nil); err != nil {
-			return err
-		}
-		deletePendingDelete(key)
-		return nil
-	}
-
 	if util.PodCompleted(pod) {
-		return bsnc.removePodForUserDefinedNetwork(pod, nil)
+		return nil
 	}
 
 	err = bsnc.ensurePodForUserDefinedNetwork(pod, true)

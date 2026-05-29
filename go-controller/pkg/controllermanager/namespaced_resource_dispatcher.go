@@ -39,10 +39,6 @@ type NamespacedResourceDispatcher struct {
 	mu          sync.RWMutex
 	controllers map[string]*NamespacedResourceControllers
 
-	// pendingDeletes stores pod objects from delete events so the reconciler
-	// can access annotations after the pod is removed from the lister.
-	pendingDeletes sync.Map
-
 	podHandler    cache.ResourceEventHandlerRegistration
 	nsHandler     cache.ResourceEventHandlerRegistration
 	netPolHandler cache.ResourceEventHandlerRegistration
@@ -64,7 +60,6 @@ func (d *NamespacedResourceDispatcher) Start(wf *factory.WatchFactory) error {
 		factory.WithUpdateHandlingForObjReplace(cache.ResourceEventHandlerFuncs{
 			AddFunc:    d.onPodAdd,
 			UpdateFunc: d.onPodUpdate,
-			DeleteFunc: d.onPodDelete,
 		}))
 	if err != nil {
 		return err
@@ -142,23 +137,6 @@ func (d *NamespacedResourceDispatcher) getControllers(namespace string) *Namespa
 	return d.controllers[namespace]
 }
 
-// GetPendingDelete retrieves a pending-delete pod entry without removing it.
-// Returns nil if no entry exists for the given key. The entry is kept so that
-// retries after a failed delete can still access the pod object. Call
-// DeletePendingDelete after the delete succeeds.
-func (d *NamespacedResourceDispatcher) GetPendingDelete(key string) *corev1.Pod {
-	v, ok := d.pendingDeletes.Load(key)
-	if !ok {
-		return nil
-	}
-	return v.(*corev1.Pod)
-}
-
-// DeletePendingDelete removes a pending-delete entry after a successful delete.
-func (d *NamespacedResourceDispatcher) DeletePendingDelete(key string) {
-	d.pendingDeletes.Delete(key)
-}
-
 // --- Pod handlers ---
 
 func (d *NamespacedResourceDispatcher) onPodAdd(obj any) {
@@ -191,27 +169,6 @@ func (d *NamespacedResourceDispatcher) onPodUpdate(oldObj, newObj any) {
 		return
 	}
 	ctrls.Pod.Reconcile(newPod.Namespace + "/" + newPod.Name)
-}
-
-func (d *NamespacedResourceDispatcher) onPodDelete(obj any) {
-	pod, ok := obj.(*corev1.Pod)
-	if !ok {
-		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-		if !ok {
-			return
-		}
-		pod, ok = tombstone.Obj.(*corev1.Pod)
-		if !ok {
-			return
-		}
-	}
-	ctrls := d.getControllers(pod.Namespace)
-	if ctrls == nil || ctrls.Pod == nil {
-		return
-	}
-	key := pod.Namespace + "/" + pod.Name
-	d.pendingDeletes.Store(key, pod)
-	ctrls.Pod.Reconcile(key)
 }
 
 // --- Namespace handlers ---
