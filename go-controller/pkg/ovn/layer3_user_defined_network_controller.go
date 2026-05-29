@@ -210,6 +210,7 @@ type Layer3UserDefinedNetworkController struct {
 
 	registerWithDispatcher func(namespaces []string)
 	getPendingDelete       func(key string) *corev1.Pod
+	deletePendingDelete    func(key string)
 }
 
 // NewLayer3UserDefinedNetworkController create a new OVN controller for the given layer3 NAD
@@ -354,15 +355,17 @@ func (oc *Layer3UserDefinedNetworkController) GetNetPolCtrl() controller.Reconci
 func (oc *Layer3UserDefinedNetworkController) InitDispatcherControllers(
 	registerWithDispatcher func(namespaces []string),
 	getPendingDelete func(key string) *corev1.Pod,
+	deletePendingDelete func(key string),
 ) {
 	oc.registerWithDispatcher = registerWithDispatcher
 	oc.getPendingDelete = getPendingDelete
+	oc.deletePendingDelete = deletePendingDelete
 
 	oc.podCtrl = controller.NewReconciler(
 		fmt.Sprintf("l3-pod-%s", oc.GetNetworkName()),
 		&controller.ReconcilerConfig{
 			Reconcile: func(key string) error {
-				return oc.reconcilePodForUserDefinedNetwork(key, oc.getPendingDelete)
+				return oc.reconcilePodForUserDefinedNetwork(key, oc.getPendingDelete, oc.deletePendingDelete)
 			},
 			Threadiness: 1,
 			MaxAttempts: controller.InfiniteAttempts,

@@ -108,7 +108,8 @@ func (cm *ControllerManager) NewNetworkController(nInfo util.NetInfo) (networkma
 						NetPol:    oc.GetNetPolCtrl(),
 					})
 				},
-				dispatcher.GetAndDeletePendingDelete,
+				dispatcher.GetPendingDelete,
+				dispatcher.DeletePendingDelete,
 			)
 		}
 		return oc, nil
@@ -128,7 +129,8 @@ func (cm *ControllerManager) NewNetworkController(nInfo util.NetInfo) (networkma
 						NetPol:    oc.GetNetPolCtrl(),
 					})
 				},
-				dispatcher.GetAndDeletePendingDelete,
+				dispatcher.GetPendingDelete,
+				dispatcher.DeletePendingDelete,
 			)
 		}
 		return oc, nil

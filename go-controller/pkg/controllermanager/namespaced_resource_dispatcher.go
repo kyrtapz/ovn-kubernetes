@@ -142,14 +142,21 @@ func (d *NamespacedResourceDispatcher) getControllers(namespace string) *Namespa
 	return d.controllers[namespace]
 }
 
-// GetAndDeletePendingDelete retrieves and removes a pending-delete pod entry.
-// Returns nil if no entry exists for the given key.
-func (d *NamespacedResourceDispatcher) GetAndDeletePendingDelete(key string) *corev1.Pod {
-	v, loaded := d.pendingDeletes.LoadAndDelete(key)
-	if !loaded {
+// GetPendingDelete retrieves a pending-delete pod entry without removing it.
+// Returns nil if no entry exists for the given key. The entry is kept so that
+// retries after a failed delete can still access the pod object. Call
+// DeletePendingDelete after the delete succeeds.
+func (d *NamespacedResourceDispatcher) GetPendingDelete(key string) *corev1.Pod {
+	v, ok := d.pendingDeletes.Load(key)
+	if !ok {
 		return nil
 	}
 	return v.(*corev1.Pod)
+}
+
+// DeletePendingDelete removes a pending-delete entry after a successful delete.
+func (d *NamespacedResourceDispatcher) DeletePendingDelete(key string) {
+	d.pendingDeletes.Delete(key)
 }
 
 // --- Pod handlers ---

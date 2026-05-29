@@ -655,9 +655,14 @@ func (bsnc *BaseUserDefinedNetworkController) hasIPAMClaim(pod *corev1.Pod, nadK
 
 // reconcilePodForUserDefinedNetwork is a level-driven reconcile function
 // for pods, suitable for use with the namespaced resource dispatcher.
-// getPendingDelete retrieves a deleted pod object stored by the dispatcher
-// when the pod is no longer in the lister; returns nil if no pending delete.
-func (bsnc *BaseUserDefinedNetworkController) reconcilePodForUserDefinedNetwork(key string, getPendingDelete func(string) *corev1.Pod) error {
+// getPendingDelete peeks at a deleted pod object stored by the dispatcher
+// (without consuming it); deletePendingDelete removes it after successful
+// cleanup.
+func (bsnc *BaseUserDefinedNetworkController) reconcilePodForUserDefinedNetwork(
+	key string,
+	getPendingDelete func(string) *corev1.Pod,
+	deletePendingDelete func(string),
+) error {
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
@@ -673,7 +678,11 @@ func (bsnc *BaseUserDefinedNetworkController) reconcilePodForUserDefinedNetwork(
 		if deletedPod == nil {
 			return nil
 		}
-		return bsnc.removePodForUserDefinedNetwork(deletedPod, nil)
+		if err := bsnc.removePodForUserDefinedNetwork(deletedPod, nil); err != nil {
+			return err
+		}
+		deletePendingDelete(key)
+		return nil
 	}
 
 	if util.PodCompleted(pod) {
