@@ -5,6 +5,8 @@ package addressset
 
 import (
 	"fmt"
+	"hash/fnv"
+	"sort"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
@@ -350,6 +352,9 @@ type ovnAddressSet struct {
 	// hashName = hashedAddressSet(name) and is set to AddressSet.Name
 	hashName string
 	uuid     string
+	// lastAddressHash caches a hash of the last successfully written address list
+	// to skip DB transactions when addresses haven't changed.
+	lastAddressHash uint64
 }
 
 // getOvnAddressSetsName returns the name for ovnAddressSets, that contains both ipv4 and ipv6 address sets,
@@ -551,8 +556,10 @@ func (as *ovnAddressSets) Destroy() error {
 // given addresses, disregarding existing state.
 func (as *ovnAddressSet) setAddresses(addresses []string) error {
 	uniqAddresses := getUniqueAddresses(addresses)
+	sort.Strings(uniqAddresses)
 
-	if as.hasOnlyAddresses(uniqAddresses...) {
+	newHash := hashStringSlice(uniqAddresses)
+	if newHash == as.lastAddressHash && as.lastAddressHash != 0 {
 		return nil
 	}
 
@@ -566,6 +573,7 @@ func (as *ovnAddressSet) setAddresses(addresses []string) error {
 		return fmt.Errorf("failed to update address set addresses %+v: %v", addrset, err)
 	}
 
+	as.lastAddressHash = newHash
 	return nil
 }
 
@@ -591,10 +599,6 @@ func (as *ovnAddressSet) addAddresses(addresses []string) ([]ovsdb.Operation, er
 
 	uniqAddresses := getUniqueAddresses(addresses)
 
-	if as.hasAddresses(uniqAddresses...) {
-		return nil, nil
-	}
-
 	klog.V(5).Infof("(%s) adding Addresses (%s) to address set", asDetail(as), uniqAddresses)
 
 	addrset := nbdb.AddressSet{
@@ -606,61 +610,8 @@ func (as *ovnAddressSet) addAddresses(addresses []string) ([]ovsdb.Operation, er
 		return nil, fmt.Errorf("failed to add addresses %v to address set %+v: %v", uniqAddresses, addrset, err)
 	}
 
+	as.lastAddressHash = 0
 	return ops, nil
-}
-
-// hasAddresses returns true if an address set contains all given Addresses
-func (as *ovnAddressSet) hasAddresses(addresses ...string) bool {
-	existingAddresses, err := as.getAddresses()
-	if err != nil {
-		return false
-	}
-
-	if len(existingAddresses) == 0 {
-		return false
-	}
-
-	for _, address := range addresses {
-		found := false
-		for _, existingAddress := range existingAddresses {
-			if existingAddress == address {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-
-	return true
-}
-
-// hasOnlyAddresses returns true if an address set contains only the given Addresses and no more
-func (as *ovnAddressSet) hasOnlyAddresses(addresses ...string) bool {
-	existingAddresses, err := as.getAddresses()
-	if err != nil {
-		return false
-	}
-
-	if len(existingAddresses) != len(addresses) {
-		return false
-	}
-
-	for _, address := range addresses {
-		found := false
-		for _, existingAddress := range existingAddresses {
-			if existingAddress == address {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-
-	return true
 }
 
 // deleteAddresses removes selected addresses from the existing address_set
@@ -682,6 +633,7 @@ func (as *ovnAddressSet) deleteAddresses(addresses []string) ([]ovsdb.Operation,
 		return nil, fmt.Errorf("failed to delete addresses %v from address set %+v: %v", uniqAddresses, addrset, err)
 	}
 
+	as.lastAddressHash = 0
 	return ops, nil
 }
 
@@ -721,4 +673,13 @@ func getUniqueAddresses(addresses []string) []string {
 		s.Insert(address)
 	}
 	return s.UnsortedList()
+}
+
+func hashStringSlice(ss []string) uint64 {
+	h := fnv.New64a()
+	for _, s := range ss {
+		h.Write([]byte(s))
+		h.Write([]byte{0})
+	}
+	return h.Sum64()
 }

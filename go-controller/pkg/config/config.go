@@ -2675,9 +2675,17 @@ func initConfigWithPath(ctx *cli.Context, exec kexec.Interface, saPath string, d
 	if err := level.Set(strconv.Itoa(Logging.Level)); err != nil {
 		return "", fmt.Errorf("failed to set klog log level %v", err)
 	}
+	klogFlags := flag.NewFlagSet("klog", flag.ExitOnError)
+	klog.InitFlags(klogFlags)
+	if Logging.Level < 4 {
+		if err := klogFlags.Set("logtostderr", "false"); err != nil {
+			klog.Warningf("Error setting klog logtostderr: %v", err)
+		}
+		if err := klogFlags.Set("stderrthreshold", "ERROR"); err != nil {
+			klog.Warningf("Error setting klog stderrthreshold: %v", err)
+		}
+	}
 	if Logging.File != "" {
-		klogFlags := flag.NewFlagSet("klog", flag.ExitOnError)
-		klog.InitFlags(klogFlags)
 		if err := klogFlags.Set("logtostderr", "false"); err != nil {
 			klog.Errorf("Error setting klog logtostderr: %v", err)
 		}

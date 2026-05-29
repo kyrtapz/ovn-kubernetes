@@ -36,6 +36,15 @@ import (
 	utilerrors "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util/errors"
 )
 
+type podIPCacheEntry struct {
+	annotation string
+	podIPs     []corev1.PodIP
+	ips        map[string][]string // network name → IP strings
+}
+
+// perAddrSetIPs maps address set key → IPs that a given pod contributes to it.
+type perAddrSetIPs map[string][]string
+
 // podSelectorAddressSet stores address set for modifications and used selectors that define this address set.
 type podSelectorAddressSet struct {
 	// backRefs is a map of objects that use this address set.
@@ -105,6 +114,21 @@ type AddressSetManager struct {
 	hostNetworkNamespaceIPsPerNode map[string][]string
 	// local cache of address sets that select HostNetworkNamespace
 	hostNetworkSelectingAddrSets sets.Set[string]
+
+	// podIPCache caches parsed pod IPs to avoid repeated JSON unmarshalling of pod annotations.
+	// Key: "namespace/name", value: podIPCacheEntry.
+	podIPCache sync.Map
+
+	// nsToAddrSets is a reverse index from namespace to address set keys that select it.
+	// Address sets with selectedNamespaces.all=true are stored under the sentinel key "*".
+	// Protected by nsToAddrSetsMu.
+	nsToAddrSetsMu sync.RWMutex
+	nsToAddrSets   map[string]sets.Set[string]
+
+	// podToAddrSetIPs tracks IPs each pod contributes to each address set,
+	// enabling incremental AddAddresses/DeleteAddresses instead of full SetAddresses.
+	// Key: podKey ("ns/name"), Value: *perAddrSetIPs.
+	podToAddrSetIPs sync.Map
 }
 
 func NewAddressSetManager(podInformer coreinformers.PodInformer, namespaceInformer coreinformers.NamespaceInformer,
@@ -121,6 +145,7 @@ func NewAddressSetManager(podInformer coreinformers.PodInformer, namespaceInform
 		nodeLister:                     nodeInformer.Lister(),
 		getNetworkNameForNADKey:        getNetworkNameForNADKey,
 		hostNetworkSelectingAddrSets:   sets.New[string](),
+		nsToAddrSets:                   make(map[string]sets.Set[string]),
 		hostNetworkNamespaceIPsPerNode: make(map[string][]string),
 	}
 	podCfg := &controller.ControllerConfig[corev1.Pod]{
@@ -281,7 +306,7 @@ func (m *AddressSetManager) EnsureAddressSet(podSelector, namespaceSelector, nod
 				},
 			}
 			m.addressSets.LoadOrStore(key, psAddrSet)
-			// this only puts key to the queue, no lock
+			m.nsIndexAdd(nsIndexAll, key)
 			m.addressSetReconciler.Reconcile(key)
 		}
 		// psAddrSet is successfully init-ed
@@ -305,6 +330,8 @@ func (m *AddressSetManager) CleanupForController(controllerName string) error {
 				return fmt.Errorf("failed to destroy address set %s: %w", key, err)
 			}
 			m.addressSets.Delete(key)
+			m.nsIndexDeleteKey(key)
+			m.deletePodAddrSetIPsForKey(key)
 			return nil
 		}); err != nil {
 			errs = append(errs, err)
@@ -326,12 +353,109 @@ func (m *AddressSetManager) DeleteAddressSet(addrSetKey, backRef string) error {
 				return err
 			}
 			m.addressSets.Delete(key)
+			m.nsIndexDeleteKey(key)
+			m.deletePodAddrSetIPsForKey(key)
 			m.hostNetworkNamespaceLock.Lock()
 			m.hostNetworkSelectingAddrSets.Delete(key)
 			m.hostNetworkNamespaceLock.Unlock()
 		}
 		return nil
 	})
+}
+
+const nsIndexAll = "*"
+
+func (m *AddressSetManager) nsIndexAdd(namespace, addrSetKey string) {
+	m.nsToAddrSetsMu.Lock()
+	defer m.nsToAddrSetsMu.Unlock()
+	s, ok := m.nsToAddrSets[namespace]
+	if !ok {
+		s = sets.New[string]()
+		m.nsToAddrSets[namespace] = s
+	}
+	s.Insert(addrSetKey)
+}
+
+func (m *AddressSetManager) nsIndexDelete(namespace, addrSetKey string) {
+	m.nsToAddrSetsMu.Lock()
+	defer m.nsToAddrSetsMu.Unlock()
+	if s, ok := m.nsToAddrSets[namespace]; ok {
+		s.Delete(addrSetKey)
+		if s.Len() == 0 {
+			delete(m.nsToAddrSets, namespace)
+		}
+	}
+}
+
+func (m *AddressSetManager) nsIndexDeleteKey(addrSetKey string) {
+	m.nsToAddrSetsMu.Lock()
+	defer m.nsToAddrSetsMu.Unlock()
+	for ns, s := range m.nsToAddrSets {
+		s.Delete(addrSetKey)
+		if s.Len() == 0 {
+			delete(m.nsToAddrSets, ns)
+		}
+	}
+}
+
+func (m *AddressSetManager) nsIndexUpdate(addrSetKey string, oldNS, newNS *selectedNamespaces) {
+	m.nsToAddrSetsMu.Lock()
+	defer m.nsToAddrSetsMu.Unlock()
+
+	// Remove from old entries
+	if oldNS != nil {
+		if oldNS.all {
+			if s, ok := m.nsToAddrSets[nsIndexAll]; ok {
+				s.Delete(addrSetKey)
+				if s.Len() == 0 {
+					delete(m.nsToAddrSets, nsIndexAll)
+				}
+			}
+		} else {
+			for ns := range oldNS.set {
+				if s, ok := m.nsToAddrSets[ns]; ok {
+					s.Delete(addrSetKey)
+					if s.Len() == 0 {
+						delete(m.nsToAddrSets, ns)
+					}
+				}
+			}
+		}
+	}
+
+	// Add to new entries
+	if newNS != nil {
+		if newNS.all {
+			s, ok := m.nsToAddrSets[nsIndexAll]
+			if !ok {
+				s = sets.New[string]()
+				m.nsToAddrSets[nsIndexAll] = s
+			}
+			s.Insert(addrSetKey)
+		} else {
+			for ns := range newNS.set {
+				s, ok := m.nsToAddrSets[ns]
+				if !ok {
+					s = sets.New[string]()
+					m.nsToAddrSets[ns] = s
+				}
+				s.Insert(addrSetKey)
+			}
+		}
+	}
+}
+
+func (m *AddressSetManager) nsIndexGetAddrSets(namespace string) sets.Set[string] {
+	m.nsToAddrSetsMu.RLock()
+	defer m.nsToAddrSetsMu.RUnlock()
+	result := sets.New[string]()
+	if s, ok := m.nsToAddrSets[namespace]; ok {
+		result = result.Union(s)
+	}
+	if s, ok := m.nsToAddrSets[nsIndexAll]; ok {
+		result = result.Union(s)
+	}
+	return result
 }
 
 func (m *AddressSetManager) podNeedUpdate(old, new *corev1.Pod) bool {
@@ -370,50 +494,112 @@ func (m *AddressSetManager) reconcilePod(podKey string) error {
 	if err != nil {
 		return fmt.Errorf("failed to split meta namespace key %q: %v", podKey, err)
 	}
-	var pod *corev1.Pod
-	// only reconcile if this pod is in a namespace that is selected by an address set
-	// Get all existing keys, then lock address sets per key and check if they are affected.
-	// If the new keys are added, it will always call reconcile for that new key, so there is no race.
-	// If some keys are deleted, we just ignore it.
-	existingAddrSets := m.addressSets.GetKeys()
-	for _, addrSetKey := range existingAddrSets {
-		// never returns error
+
+	pod, err := m.podLister.Pods(namespace).Get(name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			m.podIPCache.Delete(podKey)
+			pod = nil
+			err = nil
+		} else {
+			return fmt.Errorf("failed to get pod %s/%s: %v", namespace, name, err)
+		}
+	}
+
+	oldPerAddrSet := m.loadPodAddrSetIPs(podKey)
+	matchingAddrSets := m.nsIndexGetAddrSets(namespace)
+
+	// Pod deleted or completed: fall back to full recompute for affected address sets.
+	// Full recompute is needed because another pod may share the same IP (e.g., completed pod IP
+	// reassigned to a running pod). DeleteAddresses would incorrectly remove the shared IP.
+	if pod == nil || util.PodCompleted(pod) {
+		m.podToAddrSetIPs.Delete(podKey)
+		m.podIPCache.Delete(podKey)
+		affectedKeys := sets.New[string]()
+		for addrSetKey := range oldPerAddrSet {
+			affectedKeys.Insert(addrSetKey)
+		}
+		for addrSetKey := range matchingAddrSets {
+			affectedKeys.Insert(addrSetKey)
+		}
+		for addrSetKey := range affectedKeys {
+			m.addressSetReconciler.Reconcile(addrSetKey)
+		}
+		return nil
+	}
+
+	newPerAddrSet := make(perAddrSetIPs)
+	for addrSetKey := range matchingAddrSets {
 		if err = m.addressSets.DoWithLock(addrSetKey, func(addrSetKey string) error {
 			addrSet, found := m.addressSets.Load(addrSetKey)
 			if !found {
-				// nothing to do
 				return nil
 			}
+
+			// Node selector filter: if pod's node doesn't match, treat as non-member.
 			if addrSet.nodeSelector != nil {
-				if pod == nil {
-					pod, err = m.podLister.Pods(namespace).Get(name)
-					if err != nil {
-						if apierrors.IsNotFound(err) {
-							// pod deleted
-							pod = nil
-						} else {
-							return fmt.Errorf("failed to get pod %s in namespace %s: %v", name, namespace, err)
-						}
-					}
-				}
-				// check if pod's node matches address set's node selector
-				if pod == nil || addrSet.selectedNodes == nil || addrSet.selectedNodes.Has(pod.Spec.NodeName) {
-					m.addressSetReconciler.Reconcile(addrSetKey)
+				if addrSet.selectedNodes != nil && !addrSet.selectedNodes.Has(pod.Spec.NodeName) {
 					return nil
 				}
+			}
+
+			// Check if pod matches pod selector.
+			if !addrSet.podSelector.Matches(labels.Set(pod.Labels)) {
+				// Pod doesn't match — if it previously contributed IPs, remove them.
+				if oldIPs, had := oldPerAddrSet[addrSetKey]; had && len(oldIPs) > 0 {
+					return addrSet.addressSet.DeleteAddresses(oldIPs)
+				}
 				return nil
 			}
-			// only check address sets that have previously matched pod's namespace to avoid extra reconciliations
-			previouslyMatchedNamespaces := addrSet.selectedNamespaces
-			if previouslyMatchedNamespaces == nil || previouslyMatchedNamespaces.Has(namespace) {
-				m.addressSetReconciler.Reconcile(addrSetKey)
-				return nil
+
+			newIPs, ipErr := m.getPodIPsForSinglePod(pod, addrSet.netInfo, addrSet.legacyNetpolMode)
+			if ipErr != nil {
+				return ipErr
+			}
+
+			oldIPs := oldPerAddrSet[addrSetKey]
+			toAdd, toRemove := ipDiff(oldIPs, newIPs)
+
+			if len(toRemove) > 0 {
+				if delErr := addrSet.addressSet.DeleteAddresses(toRemove); delErr != nil {
+					return delErr
+				}
+			}
+			if len(toAdd) > 0 {
+				if addErr := addrSet.addressSet.AddAddresses(toAdd); addErr != nil {
+					return addErr
+				}
+			}
+
+			if len(newIPs) > 0 {
+				newPerAddrSet[addrSetKey] = newIPs
 			}
 			return nil
 		}); err != nil {
 			return fmt.Errorf("failed to reconcile address set %s for pod %s: %v", addrSetKey, podKey, err)
 		}
 	}
+
+	// Handle address sets the pod was previously in but are no longer matching (e.g., namespace index changed).
+	for addrSetKey, oldIPs := range oldPerAddrSet {
+		if _, stillMatched := matchingAddrSets[addrSetKey]; stillMatched {
+			continue
+		}
+		if len(oldIPs) == 0 {
+			continue
+		}
+		if err = m.addressSets.DoWithLock(addrSetKey, func(addrSetKey string) error {
+			addrSet, found := m.addressSets.Load(addrSetKey)
+			if !found {
+				return nil
+			}
+			return addrSet.addressSet.DeleteAddresses(oldIPs)
+		}); err != nil {
+			return fmt.Errorf("failed to remove stale addresses from address set %s for pod %s: %v", addrSetKey, podKey, err)
+		}
+	}
+
+	m.storePodAddrSetIPs(podKey, newPerAddrSet)
 	return nil
 }
 
@@ -694,38 +880,34 @@ func (m *AddressSetManager) reconcileAddressSet(key string) error {
 		if !found {
 			return nil
 		}
+
 		matchedNamespaces, err := m.getSelectedNamespaces(psAddrSet)
 		if err != nil {
 			return fmt.Errorf("failed to get selected namespaces for address set %s: %v", key, err)
 		}
+
 		var pods []*corev1.Pod
 		if matchedNamespaces.all {
-			// no namespace selector, use pod selector only
 			if psAddrSet.podSelector.Empty() {
-				// all cluster pods
 				pods, err = m.podLister.List(labels.Everything())
 				if err != nil {
 					return fmt.Errorf("failed to list pods: %v", err)
 				}
 			} else {
-				// global pod selector
 				pods, err = m.podLister.List(psAddrSet.podSelector)
 				if err != nil {
 					return fmt.Errorf("failed to list pods: %v", err)
 				}
 			}
 		} else {
-			// namespace selector is set, apply pod selector in every namespace
 			for ns := range matchedNamespaces.set {
 				if psAddrSet.podSelector.Empty() {
-					// empty selector means no filtering, select all pods in a given namespace
 					nsPods, err := m.podLister.Pods(ns).List(labels.Everything())
 					if err != nil {
 						return fmt.Errorf("failed to list pods in namespace %s: %v", ns, err)
 					}
 					pods = append(pods, nsPods...)
 				} else {
-					// namespaced pod selector, select matching pods in a given namespace
 					nsPods, err := m.podLister.Pods(ns).List(psAddrSet.podSelector)
 					if err != nil {
 						return fmt.Errorf("failed to list pods in namespace %s: %v", ns, err)
@@ -734,7 +916,6 @@ func (m *AddressSetManager) reconcileAddressSet(key string) error {
 				}
 			}
 		}
-		// apply node selector filter if it's not empty
 		if psAddrSet.nodeSelector != nil && !psAddrSet.nodeSelector.Empty() {
 			selectedNodes, err := m.getSelectedNodes(psAddrSet.nodeSelector)
 			if err != nil {
@@ -749,15 +930,25 @@ func (m *AddressSetManager) reconcileAddressSet(key string) error {
 			pods = filtered
 			psAddrSet.selectedNodes = selectedNodes
 		}
-		ips, err := m.getPodIPs(pods, psAddrSet.netInfo, psAddrSet.legacyNetpolMode)
-		if err != nil {
-			return fmt.Errorf("failed to get pod IPs: %v", err)
+		var ips []string
+		for _, pod := range pods {
+			podIPs, ipErr := m.getPodIPsForSinglePod(pod, psAddrSet.netInfo, psAddrSet.legacyNetpolMode)
+			if ipErr != nil {
+				return fmt.Errorf("failed to get pod IPs: %v", ipErr)
+			}
+			if len(podIPs) > 0 {
+				ips = append(ips, podIPs...)
+				podKey := pod.Namespace + "/" + pod.Name
+				cached := m.loadPodAddrSetIPs(podKey)
+				if cached == nil {
+					cached = make(perAddrSetIPs)
+				}
+				cached[key] = podIPs
+				m.storePodAddrSetIPs(podKey, cached)
+			}
 		}
-		// now check if this address set should add hostNetworkNamespace IPs
-		// it only makes sense for the default network
 		if psAddrSet.legacyNetpolMode && psAddrSet.netInfo.IsDefault() && config.Kubernetes.HostNetworkNamespace != "" &&
 			psAddrSet.podSelector.Empty() {
-			// update m.hostNetworkSelectingAddrSets
 			m.hostNetworkNamespaceLock.Lock()
 			if m.hostNetworkNamespaceExists {
 				if matchedNamespaces.Has(config.Kubernetes.HostNetworkNamespace) {
@@ -772,12 +963,11 @@ func (m *AddressSetManager) reconcileAddressSet(key string) error {
 			m.hostNetworkNamespaceLock.Unlock()
 		}
 
-		// this operation doesn't check the contents on the address set and will run a db transaction
-		// every time, may be improved.
 		err = psAddrSet.addressSet.SetAddresses(ips)
 		if err != nil {
 			return fmt.Errorf("failed to set addresses for address set %s: %v", key, err)
 		}
+		m.nsIndexUpdate(key, psAddrSet.selectedNamespaces, matchedNamespaces)
 		psAddrSet.selectedNamespaces = matchedNamespaces
 		return nil
 	})
@@ -833,28 +1023,147 @@ func (m *AddressSetManager) getSelectedNodes(nodeSelector labels.Selector) (sets
 
 func (m *AddressSetManager) getPodIPs(pods []*corev1.Pod, netInfo util.NetInfo, noHostNetwork bool) ([]string, error) {
 	ips := []string{}
+	netName := netInfo.GetNetworkName()
 	for _, pod := range pods {
 		if noHostNetwork && pod.Spec.HostNetwork {
-			// skip hostNetwork pods if requested, since they are not selected in legacyNetpolMode
 			continue
 		}
-		if pod.Annotations[ovntypes.OvnPodAnnotationName] == "" && len(pod.Status.PodIPs) == 0 {
-			// pod doesn't have IPs yet, skip it
+		annot := pod.Annotations[ovntypes.OvnPodAnnotationName]
+		if annot == "" && len(pod.Status.PodIPs) == 0 {
 			continue
 		}
-		// handle completed pods as deleted since their IPs may be already released and re-allocated to other pods
-		// due to retry framework logic
 		if util.PodCompleted(pod) {
 			continue
 		}
+
+		podKey := pod.Namespace + "/" + pod.Name
+		if cached, ok := m.podIPCache.Load(podKey); ok {
+			entry := cached.(*podIPCacheEntry)
+			if entry.annotation == annot && slices.Equal(entry.podIPs, pod.Status.PodIPs) {
+				if netIPs, found := entry.ips[netName]; found {
+					ips = append(ips, netIPs...)
+					continue
+				}
+			}
+		}
+
 		podIPs, err := util.GetPodIPsOfNetwork(pod, netInfo, m.getNetworkNameForNADKey)
 		if err != nil {
-			// not finding pod IPs on a remote pod is common until the other node wires the pod, suppress it
 			return nil, ovntypes.NewSuppressedError(err)
 		}
-		ips = append(ips, util.StringSlice(podIPs)...)
+		ipStrs := util.StringSlice(podIPs)
+		ips = append(ips, ipStrs...)
+
+		m.updatePodIPCache(podKey, annot, pod.Status.PodIPs, netName, ipStrs)
 	}
 	return ips, nil
+}
+
+func (m *AddressSetManager) updatePodIPCache(podKey, annotation string, podIPs []corev1.PodIP, netName string, ips []string) {
+	var entry *podIPCacheEntry
+	if cached, ok := m.podIPCache.Load(podKey); ok {
+		existing := cached.(*podIPCacheEntry)
+		if existing.annotation == annotation && slices.Equal(existing.podIPs, podIPs) {
+			existing.ips[netName] = ips
+			return
+		}
+	}
+	entry = &podIPCacheEntry{
+		annotation: annotation,
+		podIPs:     podIPs,
+		ips:        map[string][]string{netName: ips},
+	}
+	m.podIPCache.Store(podKey, entry)
+}
+
+// getPodIPsForSinglePod extracts IPs for a single pod on a given network.
+// Returns nil (not error) if pod has no IPs yet or is completed.
+func (m *AddressSetManager) getPodIPsForSinglePod(pod *corev1.Pod, netInfo util.NetInfo, noHostNetwork bool) ([]string, error) {
+	if pod == nil {
+		return nil, nil
+	}
+	if noHostNetwork && pod.Spec.HostNetwork {
+		return nil, nil
+	}
+	annot := pod.Annotations[ovntypes.OvnPodAnnotationName]
+	if annot == "" && len(pod.Status.PodIPs) == 0 {
+		return nil, nil
+	}
+	if util.PodCompleted(pod) {
+		return nil, nil
+	}
+
+	netName := netInfo.GetNetworkName()
+	podKey := pod.Namespace + "/" + pod.Name
+	if cached, ok := m.podIPCache.Load(podKey); ok {
+		entry := cached.(*podIPCacheEntry)
+		if entry.annotation == annot && slices.Equal(entry.podIPs, pod.Status.PodIPs) {
+			if netIPs, found := entry.ips[netName]; found {
+				return netIPs, nil
+			}
+		}
+	}
+
+	podIPs, err := util.GetPodIPsOfNetwork(pod, netInfo, m.getNetworkNameForNADKey)
+	if err != nil {
+		return nil, ovntypes.NewSuppressedError(err)
+	}
+	ipStrs := util.StringSlice(podIPs)
+	m.updatePodIPCache(podKey, annot, pod.Status.PodIPs, netName, ipStrs)
+	return ipStrs, nil
+}
+
+// loadPodAddrSetIPs returns a shallow copy of the cached per-address-set IPs for a pod.
+// Returns a new map safe for mutation without races.
+func (m *AddressSetManager) loadPodAddrSetIPs(podKey string) perAddrSetIPs {
+	v, ok := m.podToAddrSetIPs.Load(podKey)
+	if !ok {
+		return nil
+	}
+	orig := v.(perAddrSetIPs)
+	cp := make(perAddrSetIPs, len(orig))
+	for k, v := range orig {
+		cp[k] = v
+	}
+	return cp
+}
+
+// storePodAddrSetIPs atomically updates the per-address-set IPs for a pod.
+func (m *AddressSetManager) storePodAddrSetIPs(podKey string, ips perAddrSetIPs) {
+	if len(ips) == 0 {
+		m.podToAddrSetIPs.Delete(podKey)
+	} else {
+		m.podToAddrSetIPs.Store(podKey, ips)
+	}
+}
+
+// ipDiff computes IPs to add and IPs to remove given old and new sets.
+func ipDiff(oldIPs, newIPs []string) (toAdd, toRemove []string) {
+	oldSet := sets.New[string](oldIPs...)
+	newSet := sets.New[string](newIPs...)
+	for ip := range newSet {
+		if !oldSet.Has(ip) {
+			toAdd = append(toAdd, ip)
+		}
+	}
+	for ip := range oldSet {
+		if !newSet.Has(ip) {
+			toRemove = append(toRemove, ip)
+		}
+	}
+	return
+}
+
+// deletePodFromAddrSetIPs removes all entries for a given address set key from podToAddrSetIPs.
+func (m *AddressSetManager) deletePodAddrSetIPsForKey(addrSetKey string) {
+	m.podToAddrSetIPs.Range(func(key, value any) bool {
+		ips := value.(perAddrSetIPs)
+		delete(ips, addrSetKey)
+		if len(ips) == 0 {
+			m.podToAddrSetIPs.Delete(key)
+		}
+		return true
+	})
 }
 
 func GetPodSelectorAddrSetDbIDs(podSelector, namespaceSelector, nodeSelector *metav1.LabelSelector, namespace, controller string, legacyNetpolMode bool) *libovsdbops.DbObjectIDs {
