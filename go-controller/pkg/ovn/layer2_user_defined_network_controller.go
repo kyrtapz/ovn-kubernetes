@@ -385,6 +385,22 @@ func (oc *Layer2UserDefinedNetworkController) Start(_ context.Context) error {
 }
 
 func (oc *Layer2UserDefinedNetworkController) run() error {
+	// Call dispatcher Watch* overrides BEFORE base run() so they set the
+	// sentinel podHandler/namespaceHandler/netPolicyHandler. This prevents
+	// base run() from registering per-network retry framework handlers on
+	// the informer (Go embedding has no virtual dispatch, so base run()
+	// calls BaseNetworkController.WatchPods, not our override).
+	if oc.podCtrl != nil {
+		if err := oc.WatchNamespaces(); err != nil {
+			return err
+		}
+		if err := oc.WatchPods(); err != nil {
+			return err
+		}
+		if err := oc.WatchNetworkPolicy(); err != nil {
+			return err
+		}
+	}
 	err := oc.BaseLayer2UserDefinedNetworkController.run()
 	if err != nil {
 		return err
