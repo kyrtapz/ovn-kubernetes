@@ -77,6 +77,10 @@ type ControllerManager struct {
 	eIPController *ovn.EgressIPController
 
 	addressSetManager *addresssetmanager.AddressSetManager
+
+	// nsResourceDispatcher dispatches pod, namespace, and network policy
+	// events to UDN controllers based on namespace ownership
+	nsResourceDispatcher *NamespacedResourceDispatcher
 }
 
 func (cm *ControllerManager) NewNetworkController(nInfo util.NetInfo) (networkmanager.NetworkController, error) {
@@ -94,12 +98,38 @@ func (cm *ControllerManager) NewNetworkController(nInfo util.NetInfo) (networkma
 		if err != nil {
 			return nil, err
 		}
+		if cm.nsResourceDispatcher != nil {
+			dispatcher := cm.nsResourceDispatcher
+			oc.InitDispatcherControllers(
+				func(namespaces []string) {
+					dispatcher.AddControllers(namespaces, &NamespacedResourceControllers{
+						Pod:       oc.GetPodCtrl(),
+						Namespace: oc.GetNamespaceCtrl(),
+						NetPol:    oc.GetNetPolCtrl(),
+					})
+				},
+				dispatcher.GetAndDeletePendingDelete,
+			)
+		}
 		return oc, nil
 	case ovntypes.Layer2Topology:
 		oc, err := ovn.NewLayer2UserDefinedNetworkController(cnci, nInfo, cm.networkManager.Interface(), cm.routeImportManager,
 			cm.portCache, cm.eIPController, cm.addressSetManager, cm.nodeController, cm.serviceController)
 		if err != nil {
 			return nil, err
+		}
+		if cm.nsResourceDispatcher != nil {
+			dispatcher := cm.nsResourceDispatcher
+			oc.InitDispatcherControllers(
+				func(namespaces []string) {
+					dispatcher.AddControllers(namespaces, &NamespacedResourceControllers{
+						Pod:       oc.GetPodCtrl(),
+						Namespace: oc.GetNamespaceCtrl(),
+						NetPol:    oc.GetNetPolCtrl(),
+					})
+				},
+				dispatcher.GetAndDeletePendingDelete,
+			)
 		}
 		return oc, nil
 	case ovntypes.LocalnetTopology:
@@ -419,6 +449,14 @@ func (cm *ControllerManager) Start(ctx context.Context) error {
 	err = cm.watchFactory.Start()
 	if err != nil {
 		return err
+	}
+
+	cm.nsResourceDispatcher = NewNamespacedResourceDispatcher()
+	if err := cm.nsResourceDispatcher.Start(cm.watchFactory); err != nil {
+		return fmt.Errorf("failed to start namespaced resource dispatcher: %w", err)
+	}
+	if err := cm.nsResourceDispatcher.StartNetworkPolicyHandler(cm.watchFactory.NetworkPolicyInformer()); err != nil {
+		return fmt.Errorf("failed to start dispatcher network policy handler: %w", err)
 	}
 
 	// Wait for one node to have the zone we want to manage, otherwise there is no point in configuring NBDB.

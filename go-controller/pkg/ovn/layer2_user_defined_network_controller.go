@@ -752,6 +752,10 @@ func (oc *Layer2UserDefinedNetworkController) newRetryFramework(
 	)
 }
 
+func (oc *Layer2UserDefinedNetworkController) GetPodCtrl() controller.Reconciler       { return oc.podCtrl }
+func (oc *Layer2UserDefinedNetworkController) GetNamespaceCtrl() controller.Reconciler { return oc.namespaceCtrl }
+func (oc *Layer2UserDefinedNetworkController) GetNetPolCtrl() controller.Reconciler    { return oc.netPolCtrl }
+
 // InitDispatcherControllers creates workqueue-based controllers for pods,
 // namespaces, and network policies for use with the namespaced resource
 // dispatcher. When these are set, the corresponding Watch*() methods will

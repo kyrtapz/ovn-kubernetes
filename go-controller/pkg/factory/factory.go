@@ -1724,6 +1724,12 @@ func (wf *WatchFactory) GetNetworkPolicy(namespace, name string) (*knet.NetworkP
 	return networkPolicyLister.NetworkPolicies(namespace).Get(name)
 }
 
+// NetworkPolicyInformer returns the underlying SharedIndexInformer for
+// NetworkPolicy objects.
+func (wf *WatchFactory) NetworkPolicyInformer() cache.SharedIndexInformer {
+	return wf.informers[PolicyType].inf
+}
+
 // ListNetworkPolicies returns all network policies in the given namespace, or
 // across all namespaces if namespace is empty.
 func (wf *WatchFactory) ListNetworkPolicies(namespace string) ([]*knet.NetworkPolicy, error) {
