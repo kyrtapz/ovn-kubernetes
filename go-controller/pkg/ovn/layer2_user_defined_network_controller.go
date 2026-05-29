@@ -15,7 +15,9 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
 
@@ -23,6 +25,7 @@ import (
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/allocator/pod"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controller"
 	nodecontroller "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controllers/node"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/generator/udn"
@@ -226,6 +229,20 @@ type Layer2UserDefinedNetworkController struct {
 	defaultGatewayReconciler *kubevirt.DefaultGatewayReconciler
 
 	remoteNodesNoRouter sync.Map
+
+	// Per-resource controllers fed by the namespaced resource dispatcher.
+	// When set, the corresponding Watch*() method starts these controllers
+	// instead of registering via the retry framework.
+	podCtrl       controller.Reconciler
+	namespaceCtrl controller.Reconciler
+	netPolCtrl    controller.Reconciler
+
+	// registerWithDispatcher registers all per-network controllers with the
+	// namespaced resource dispatcher for the given namespaces.
+	registerWithDispatcher func(namespaces []string)
+
+	// getPendingDelete retrieves a deleted pod object stored by the dispatcher.
+	getPendingDelete func(key string) *corev1.Pod
 }
 
 // NewLayer2UserDefinedNetworkController create a new OVN controller for the given layer2 NAD
@@ -515,18 +532,73 @@ func (oc *Layer2UserDefinedNetworkController) init() error {
 
 func (oc *Layer2UserDefinedNetworkController) Stop() {
 	klog.Infof("Stopping controller for UDN %s", oc.GetNetworkName())
+	var toStop []controller.Reconciler
+	if oc.podCtrl != nil {
+		toStop = append(toStop, oc.podCtrl)
+	}
+	if oc.namespaceCtrl != nil {
+		toStop = append(toStop, oc.namespaceCtrl)
+	}
+	if oc.netPolCtrl != nil {
+		toStop = append(toStop, oc.netPolCtrl)
+	}
+	if len(toStop) > 0 {
+		controller.Stop(toStop...)
+	}
 	oc.DeregisterServiceNetwork()
 	oc.BaseLayer2UserDefinedNetworkController.stop()
 }
 
 func (oc *Layer2UserDefinedNetworkController) Reconcile(netInfo util.NetInfo) error {
+	oldNamespaces := sets.NewString(oc.GetNADNamespaces()...)
+
 	if err := oc.BaseNetworkController.reconcile(
 		netInfo,
 		func(node string) { oc.gatewaysFailed.Store(node, true) },
 	); err != nil {
 		return err
 	}
+
+	if oc.registerWithDispatcher != nil {
+		oc.registerWithDispatcher(oc.GetNetInfo().GetNADNamespaces())
+		newNamespaces := sets.NewString(oc.GetNetInfo().GetNADNamespaces()...).Difference(oldNamespaces).List()
+		oc.enqueueResourcesForNamespaces(newNamespaces)
+	}
+
 	return oc.ReconcileServiceNetwork()
+}
+
+func (oc *Layer2UserDefinedNetworkController) enqueueResourcesForNamespaces(namespaces []string) {
+	if len(namespaces) == 0 {
+		return
+	}
+	for _, ns := range namespaces {
+		if oc.namespaceCtrl != nil {
+			oc.namespaceCtrl.Reconcile(ns)
+		}
+		if oc.podCtrl != nil {
+			pods, err := oc.watchFactory.PodCoreInformer().Lister().Pods(ns).List(labels.Everything())
+			if err != nil {
+				klog.Errorf("Failed to list pods in namespace %s for reconcile on network %s: %v", ns, oc.GetNetworkName(), err)
+				continue
+			}
+			for _, pod := range pods {
+				if util.PodScheduled(pod) {
+					oc.podCtrl.Reconcile(pod.Namespace + "/" + pod.Name)
+				}
+			}
+		}
+		if oc.netPolCtrl != nil {
+			nps, err := oc.watchFactory.ListNetworkPolicies(ns)
+			if err != nil {
+				klog.Errorf("Failed to list network policies in namespace %s for reconcile on network %s: %v", ns, oc.GetNetworkName(), err)
+				continue
+			}
+			for _, np := range nps {
+				oc.netPolCtrl.Reconcile(np.Namespace + "/" + np.Name)
+			}
+		}
+	}
 }
 
 func (oc *Layer2UserDefinedNetworkController) RegisterNodeHandler() error {
@@ -678,6 +750,199 @@ func (oc *Layer2UserDefinedNetworkController) newRetryFramework(
 		oc.watchFactory,
 		resourceHandler,
 	)
+}
+
+// InitDispatcherControllers creates workqueue-based controllers for pods,
+// namespaces, and network policies for use with the namespaced resource
+// dispatcher. When these are set, the corresponding Watch*() methods will
+// start these controllers instead of registering via the retry framework.
+func (oc *Layer2UserDefinedNetworkController) InitDispatcherControllers(
+	registerWithDispatcher func(namespaces []string),
+	getPendingDelete func(key string) *corev1.Pod,
+) {
+	oc.registerWithDispatcher = registerWithDispatcher
+	oc.getPendingDelete = getPendingDelete
+
+	oc.podCtrl = controller.NewReconciler(
+		fmt.Sprintf("l2-pod-%s", oc.GetNetworkName()),
+		&controller.ReconcilerConfig{
+			Reconcile:   oc.reconcilePod,
+			Threadiness: 1,
+			MaxAttempts: controller.InfiniteAttempts,
+		},
+	)
+
+	if oc.shouldWatchNamespaces() {
+		oc.namespaceCtrl = controller.NewReconciler(
+			fmt.Sprintf("l2-ns-%s", oc.GetNetworkName()),
+			&controller.ReconcilerConfig{
+				Reconcile:   oc.reconcileNamespaceForUserDefinedNetwork,
+				Threadiness: 1,
+			},
+		)
+	}
+
+	if oc.IsPrimaryNetwork() {
+		oc.netPolCtrl = controller.NewReconciler(
+			fmt.Sprintf("l2-netpol-%s", oc.GetNetworkName()),
+			&controller.ReconcilerConfig{
+				Reconcile:   oc.reconcileNetworkPolicyForUserDefinedNetwork,
+				Threadiness: 1,
+			},
+		)
+	}
+}
+
+func (oc *Layer2UserDefinedNetworkController) reconcilePod(key string) error {
+	err := oc.reconcilePodForUserDefinedNetwork(key, oc.getPendingDelete)
+	if err != nil {
+		return err
+	}
+	namespace, name, splitErr := cache.SplitMetaNamespaceKey(key)
+	if splitErr != nil {
+		return nil
+	}
+	pod, podErr := oc.watchFactory.PodCoreInformer().Lister().Pods(namespace).Get(name)
+	if podErr != nil {
+		return nil
+	}
+	if oc.isPodScheduledinLocalZone(pod) {
+		return oc.updateLocalPodEvent(pod)
+	}
+	return nil
+}
+
+// WatchPodsDispatcher starts the pod controller workers and registers with the
+// dispatcher. Overrides BaseNetworkController.WatchPods when dispatcher is active.
+func (oc *Layer2UserDefinedNetworkController) WatchPods() error {
+	if oc.podHandler != nil {
+		return nil
+	}
+	if oc.podCtrl == nil {
+		return oc.BaseNetworkController.WatchPods()
+	}
+
+	if err := oc.syncPodsForDispatcher(); err != nil {
+		return fmt.Errorf("failed to sync pods: %w", err)
+	}
+	if err := controller.Start(oc.podCtrl); err != nil {
+		return err
+	}
+	oc.registerWithDispatcher(oc.GetNetInfo().GetNADNamespaces())
+	oc.podHandler = &factory.Handler{}
+	oc.enqueueExistingPods()
+	return nil
+}
+
+// WatchNamespaces starts the namespace controller workers when dispatcher is
+// active. Overrides BaseNetworkController.WatchNamespaces.
+func (oc *Layer2UserDefinedNetworkController) WatchNamespaces() error {
+	if !oc.shouldWatchNamespaces() {
+		return nil
+	}
+	if oc.namespaceHandler != nil {
+		return nil
+	}
+	if oc.namespaceCtrl == nil {
+		return oc.BaseNetworkController.WatchNamespaces()
+	}
+
+	if err := oc.syncNamespacesForDispatcher(); err != nil {
+		return fmt.Errorf("failed to sync namespaces: %w", err)
+	}
+	if err := controller.Start(oc.namespaceCtrl); err != nil {
+		return err
+	}
+	oc.namespaceHandler = &factory.Handler{}
+	for _, ns := range oc.GetNetInfo().GetNADNamespaces() {
+		oc.namespaceCtrl.Reconcile(ns)
+	}
+	return nil
+}
+
+// WatchNetworkPolicy starts the network policy controller workers when
+// dispatcher is active. Overrides BaseUserDefinedNetworkController.WatchNetworkPolicy.
+func (oc *Layer2UserDefinedNetworkController) WatchNetworkPolicy() error {
+	if oc.netPolicyHandler != nil {
+		return nil
+	}
+	if oc.netPolCtrl == nil {
+		return oc.BaseUserDefinedNetworkController.WatchNetworkPolicy()
+	}
+
+	if err := oc.syncNetPolsForDispatcher(); err != nil {
+		return fmt.Errorf("failed to sync network policies: %w", err)
+	}
+	if err := controller.Start(oc.netPolCtrl); err != nil {
+		return err
+	}
+	oc.netPolicyHandler = &factory.Handler{}
+	oc.enqueueExistingNetPols()
+	return nil
+}
+
+func (oc *Layer2UserDefinedNetworkController) syncPodsForDispatcher() error {
+	pods, err := oc.watchFactory.PodCoreInformer().Lister().List(labels.Everything())
+	if err != nil {
+		return err
+	}
+	objs := make([]interface{}, 0, len(pods))
+	for _, p := range pods {
+		objs = append(objs, p)
+	}
+	return oc.syncPodsForUserDefinedNetwork(objs)
+}
+
+func (oc *Layer2UserDefinedNetworkController) syncNamespacesForDispatcher() error {
+	nsList, err := oc.watchFactory.NamespaceCoreInformer().Lister().List(labels.Everything())
+	if err != nil {
+		return err
+	}
+	objs := make([]interface{}, 0, len(nsList))
+	for _, ns := range nsList {
+		objs = append(objs, ns)
+	}
+	return oc.syncNamespaces(objs)
+}
+
+func (oc *Layer2UserDefinedNetworkController) syncNetPolsForDispatcher() error {
+	nps, err := oc.watchFactory.ListNetworkPolicies("")
+	if err != nil {
+		return err
+	}
+	objs := make([]interface{}, 0, len(nps))
+	for _, np := range nps {
+		objs = append(objs, np)
+	}
+	return oc.syncNetworkPolicies(objs)
+}
+
+func (oc *Layer2UserDefinedNetworkController) enqueueExistingPods() {
+	for _, ns := range oc.GetNetInfo().GetNADNamespaces() {
+		pods, err := oc.watchFactory.PodCoreInformer().Lister().Pods(ns).List(labels.Everything())
+		if err != nil {
+			klog.Errorf("Failed to list pods in namespace %s for initial enqueue on network %s: %v", ns, oc.GetNetworkName(), err)
+			continue
+		}
+		for _, pod := range pods {
+			if util.PodScheduled(pod) {
+				oc.podCtrl.Reconcile(pod.Namespace + "/" + pod.Name)
+			}
+		}
+	}
+}
+
+func (oc *Layer2UserDefinedNetworkController) enqueueExistingNetPols() {
+	for _, ns := range oc.GetNetInfo().GetNADNamespaces() {
+		nps, err := oc.watchFactory.ListNetworkPolicies(ns)
+		if err != nil {
+			klog.Errorf("Failed to list network policies in namespace %s for initial enqueue on network %s: %v", ns, oc.GetNetworkName(), err)
+			continue
+		}
+		for _, np := range nps {
+			oc.netPolCtrl.Reconcile(np.Namespace + "/" + np.Name)
+		}
+	}
 }
 
 func (oc *Layer2UserDefinedNetworkController) addUpdateLocalNodeEvent(node *corev1.Node, nSyncs *nodeSyncs, state *nodecontroller.NodeAnnotationState) error {

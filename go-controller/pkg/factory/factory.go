@@ -1724,6 +1724,16 @@ func (wf *WatchFactory) GetNetworkPolicy(namespace, name string) (*knet.NetworkP
 	return networkPolicyLister.NetworkPolicies(namespace).Get(name)
 }
 
+// ListNetworkPolicies returns all network policies in the given namespace, or
+// across all namespaces if namespace is empty.
+func (wf *WatchFactory) ListNetworkPolicies(namespace string) ([]*knet.NetworkPolicy, error) {
+	networkPolicyLister := wf.informers[PolicyType].lister.(netlisters.NetworkPolicyLister)
+	if namespace == "" {
+		return networkPolicyLister.List(labels.Everything())
+	}
+	return networkPolicyLister.NetworkPolicies(namespace).List(labels.Everything())
+}
+
 // GetMultinetworkPolicy gets a specific multinetwork policy by the namespace/name
 func (wf *WatchFactory) GetMultiNetworkPolicy(namespace, name string) (*mnpapi.MultiNetworkPolicy, error) {
 	multinetworkPolicyLister := wf.informers[MultiNetworkPolicyType].lister.(mnplister.MultiNetworkPolicyLister)
