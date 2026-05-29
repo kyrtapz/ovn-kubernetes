@@ -16,7 +16,10 @@ import (
 	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 
 	corev1 "k8s.io/api/core/v1"
+	knet "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
 	"k8s.io/utils/ptr"
@@ -648,6 +651,79 @@ func (bsnc *BaseUserDefinedNetworkController) hasIPAMClaim(pod *corev1.Pod, nadK
 
 	hasIPAMClaim := ipamClaim != nil && len(ipamClaim.Status.IPs) > 0
 	return hasIPAMClaim, nil
+}
+
+// reconcilePodForUserDefinedNetwork is a level-driven reconcile function
+// for pods, suitable for use with the namespaced resource dispatcher.
+// getPendingDelete retrieves a deleted pod object stored by the dispatcher
+// when the pod is no longer in the lister; returns nil if no pending delete.
+func (bsnc *BaseUserDefinedNetworkController) reconcilePodForUserDefinedNetwork(key string, getPendingDelete func(string) *corev1.Pod) error {
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		return err
+	}
+
+	pod, err := bsnc.watchFactory.PodCoreInformer().Lister().Pods(namespace).Get(name)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	if apierrors.IsNotFound(err) || pod == nil {
+		deletedPod := getPendingDelete(key)
+		if deletedPod == nil {
+			return nil
+		}
+		return bsnc.removePodForUserDefinedNetwork(deletedPod, nil)
+	}
+
+	if util.PodCompleted(pod) {
+		return bsnc.removePodForUserDefinedNetwork(pod, nil)
+	}
+
+	err = bsnc.ensurePodForUserDefinedNetwork(pod, true)
+	if err != nil && types.IsSuppressedError(err) {
+		return nil
+	}
+	return err
+}
+
+// reconcileNamespaceForUserDefinedNetwork is a level-driven reconcile function
+// for namespaces, suitable for use with the namespaced resource dispatcher.
+func (bsnc *BaseUserDefinedNetworkController) reconcileNamespaceForUserDefinedNetwork(key string) error {
+	ns, err := bsnc.watchFactory.NamespaceCoreInformer().Lister().Get(key)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return bsnc.deleteNamespaceForUserDefinedNetwork(&corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: key},
+			})
+		}
+		return err
+	}
+	return bsnc.AddNamespaceForUserDefinedNetwork(ns)
+}
+
+// reconcileNetworkPolicyForUserDefinedNetwork is a level-driven reconcile
+// function for network policies, suitable for use with the namespaced resource
+// dispatcher.
+func (bsnc *BaseUserDefinedNetworkController) reconcileNetworkPolicyForUserDefinedNetwork(key string) error {
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		return err
+	}
+
+	np, err := bsnc.watchFactory.GetNetworkPolicy(namespace, name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return bsnc.deleteNetworkPolicy(&knet.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: namespace,
+				},
+			})
+		}
+		return err
+	}
+	return bsnc.addNetworkPolicy(np)
 }
 
 func (bsnc *BaseUserDefinedNetworkController) syncPodsForUserDefinedNetwork(pods []interface{}) error {
