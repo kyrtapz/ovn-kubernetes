@@ -104,6 +104,55 @@ func CreateOrUpdatePortWithInterface(ovsClient libovsdbclient.Client, bridgeName
 	return err
 }
 
+// CreateOrUpdatePodPort creates or updates a CNI pod port and interface on a bridge.
+// Unlike CreateOrUpdatePortWithInterface, this does not set the interface type
+// (OVS infers it from the netdev) and supports port OtherConfig (e.g. transient=true).
+func CreateOrUpdatePodPort(ovsClient libovsdbclient.Client, bridgeName, portName string, portExternalIDs, portOtherConfig, ifaceExternalIDs map[string]string) error {
+	ops, err := CreateOrUpdatePodPortOps(ovsClient, nil, bridgeName, portName, portExternalIDs, portOtherConfig, ifaceExternalIDs)
+	if err != nil {
+		return err
+	}
+	_, err = TransactAndCheck(ovsClient, ops)
+	return err
+}
+
+// CreateOrUpdatePodPortOps returns operations for CreateOrUpdatePodPort.
+func CreateOrUpdatePodPortOps(ovsClient libovsdbclient.Client, ops []ovsdb.Operation, bridgeName, portName string, portExternalIDs, portOtherConfig, ifaceExternalIDs map[string]string) ([]ovsdb.Operation, error) {
+	iface := &vswitchd.Interface{Name: portName, ExternalIDs: ifaceExternalIDs}
+	port := &vswitchd.Port{Name: portName, ExternalIDs: portExternalIDs, OtherConfig: portOtherConfig}
+	bridge := &vswitchd.Bridge{Name: bridgeName}
+
+	ifaceModel := operationModel{
+		Model:          iface,
+		OnModelUpdates: []interface{}{&iface.ExternalIDs},
+		DoAfter: func() {
+			port.Interfaces = []string{iface.UUID}
+		},
+		ErrNotFound: false,
+		BulkOp:      false,
+	}
+
+	portModel := operationModel{
+		Model:          port,
+		OnModelUpdates: []interface{}{&port.ExternalIDs, &port.OtherConfig},
+		DoAfter: func() {
+			bridge.Ports = append(bridge.Ports, port.UUID)
+		},
+		ErrNotFound: false,
+		BulkOp:      false,
+	}
+
+	bridgeModel := operationModel{
+		Model:            bridge,
+		OnModelMutations: []interface{}{&bridge.Ports},
+		ErrNotFound:      true,
+		BulkOp:           false,
+	}
+
+	m := newModelClient(ovsClient)
+	return m.CreateOrUpdateOps(ops, ifaceModel, portModel, bridgeModel)
+}
+
 // CreateOrUpdatePortWithInterfaceOps returns operations to create or update an OVS port and its interface.
 // OVS uses the following hierarchy: Bridge/Port/Interface. A port is referenced by a bridge,
 // and an interface is referenced by a port.

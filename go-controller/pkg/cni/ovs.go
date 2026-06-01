@@ -10,18 +10,28 @@ import (
 	"strings"
 	"time"
 
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/klog/v2"
 	kexec "k8s.io/utils/exec"
 
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/libovsdb/ops/ovs"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/vswitchd"
 )
 
 var runner kexec.Interface
 var vsctlPath string
 var ofctlPath string
+var ovsDBClient libovsdbclient.Client
+
+// SetOVSDBClient sets the package-level libovsdb client for OVS operations,
+// avoiding fork/exec of ovs-vsctl.
+func SetOVSDBClient(c libovsdbclient.Client) {
+	ovsDBClient = c
+}
 
 func SetExec(r kexec.Interface) error {
 	runner = r
@@ -199,12 +209,27 @@ func checkCancelSandbox(mac string, getter PodInfoGetter, namespace, name, nadKe
 	return nil
 }
 
+func getInterfaceOVNInstalled(ifaceName, ifaceID string) (installed bool, active bool, err error) {
+	ifaces, lookupErr := ovs.FindInterfacesWithPredicate(ovsDBClient, func(i *vswitchd.Interface) bool {
+		return i.Name == ifaceName
+	})
+	if lookupErr != nil {
+		return false, false, lookupErr
+	}
+	if len(ifaces) == 0 {
+		return false, true, nil
+	}
+	iface := ifaces[0]
+	currentIfaceID := iface.ExternalIDs["iface-id"]
+	if currentIfaceID != ifaceID {
+		return false, false, nil
+	}
+	return iface.ExternalIDs["ovn-installed"] == "true", true, nil
+}
+
 func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
 	ifaceName, ifaceID string, getter PodInfoGetter,
 	namespace, name, initialPodUID string) error {
-	// Note that this function is called either the Full mode or the DPU mode
-	columns := []string{"external-ids:iface-id", "external-ids:ovn-installed"}
-
 	waitStart := time.Now()
 
 	mac := ifInfo.MAC.String()
@@ -226,14 +251,12 @@ func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
 			})
 			return fmt.Errorf("%s waiting for OVS port binding (ovn-installed) for %s %v", errDetail, mac, ifAddrs)
 		default:
-			// check to see if the interface has its expected external id set, which indicates if it is active
-			output, err := ovsGetMultiOutput("Interface", ifaceName, columns)
-			// It may have been cleared by a subsequent CNI ADD and if so, there's no need to keep checking for flows
-			if err == nil && len(output) > 0 && output[0] != ifaceID {
+			installed, active, err := getInterfaceOVNInstalled(ifaceName, ifaceID)
+			if err == nil && !active {
 				return fmt.Errorf("OVS sandbox port %s is no longer active (probably due to a subsequent "+
 					"CNI ADD)", ifaceName)
 			}
-			if err == nil && len(output) == 2 && output[1] == "true" {
+			if err == nil && installed {
 				waitDuration := time.Since(waitStart)
 				telemetry.Emit(telemetry.Event{
 					Event:   "cni_ovn_installed",
@@ -250,7 +273,6 @@ func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
 				return fmt.Errorf("%v waiting for OVS port binding for %s %v", err, mac, ifAddrs)
 			}
 
-			// try again later
 			waitTime := 200 * time.Millisecond
 			time.Sleep(waitTime)
 			metrics.MetricOvsInterfaceUpWait.Add(waitTime.Seconds())

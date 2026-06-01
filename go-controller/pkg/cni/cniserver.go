@@ -103,6 +103,7 @@ func NewCNIServer(
 		ovsClient:      ovsClient,
 		dpuHealth:      dpuHealth,
 	}
+	SetOVSDBClient(ovsClient)
 
 	if len(config.Kubernetes.CAData) > 0 {
 		s.kubeAuth.KubeCAData = base64.StdEncoding.EncodeToString(config.Kubernetes.CAData)
