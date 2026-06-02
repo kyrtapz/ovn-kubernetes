@@ -31,6 +31,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/node"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/pod"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controller"
 	sharednode "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controllers/node"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kube"
@@ -60,6 +61,10 @@ type networkClusterController struct {
 	// retry framework for L2 pod ip allocation
 	podHandler *factory.Handler
 	retryPods  *objretry.RetryFramework
+
+	// dispatcher-based pod controller (replaces retryPods when set)
+	podCtrl                controller.Reconciler
+	registerWithDispatcher func(namespaces []string)
 
 	// retry framework for persistent ip allocation
 	ipamClaimHandler *factory.Handler
@@ -443,7 +448,9 @@ func (ncc *networkClusterController) init() error {
 	}
 
 	if ncc.hasPodAllocation() {
-		ncc.retryPods = ncc.newRetryFramework(factory.PodType, true)
+		if ncc.podCtrl == nil {
+			ncc.retryPods = ncc.newRetryFramework(factory.PodType, true)
+		}
 		ipAllocator, err := newIPAllocatorForNetwork(ncc.GetNetInfo())
 		if err != nil {
 			return fmt.Errorf("could not initialize the IP allocator for network %q: %w", ncc.GetNetworkName(), err)
@@ -770,13 +777,23 @@ func (ncc *networkClusterController) Start(_ context.Context) error {
 		}
 
 		start = time.Now()
-		klog.Infof("Cluster manager network controller %q starting Pod watcher...", ncc.GetNetworkName())
-		podHandler, err := ncc.retryPods.WatchResource()
-		if err != nil {
-			return fmt.Errorf("unable to watch pods: %w", err)
+		if ncc.podCtrl != nil {
+			klog.Infof("Cluster manager network controller %q starting Pod dispatcher controller...", ncc.GetNetworkName())
+			if err := controller.Start(ncc.podCtrl); err != nil {
+				return fmt.Errorf("unable to start pod dispatcher controller: %w", err)
+			}
+			ncc.registerWithDispatcher(ncc.GetNetInfo().GetNADNamespaces())
+			ncc.podHandler = &factory.Handler{}
+			klog.Infof("Cluster manager network controller %q completed Pod dispatcher start. Took: %v", ncc.GetNetworkName(), time.Since(start))
+		} else {
+			klog.Infof("Cluster manager network controller %q starting Pod watcher...", ncc.GetNetworkName())
+			podHandler, err := ncc.retryPods.WatchResource()
+			if err != nil {
+				return fmt.Errorf("unable to watch pods: %w", err)
+			}
+			ncc.podHandler = podHandler
+			klog.Infof("Cluster manager network controller %q completed watch Pods. Took: %v", ncc.GetNetworkName(), time.Since(start))
 		}
-		ncc.podHandler = podHandler
-		klog.Infof("Cluster manager network controller %q completed watch Pods. Took: %v", ncc.GetNetworkName(), time.Since(start))
 	}
 
 	return nil
@@ -794,7 +811,9 @@ func (ncc *networkClusterController) Stop() {
 		ncc.nodeReconciler.DeregisterNetworkController(ncc.GetNetworkName())
 	}
 
-	if ncc.podHandler != nil {
+	if ncc.podCtrl != nil {
+		controller.Stop(ncc.podCtrl)
+	} else if ncc.podHandler != nil {
 		ncc.watchFactory.RemovePodHandler(ncc.podHandler)
 	}
 }
@@ -811,6 +830,46 @@ func (ncc *networkClusterController) newRetryFramework(objectType reflect.Type, 
 		},
 	}
 	return objretry.NewRetryFramework(ncc.GetNetworkName()+"/clustermanager", ncc.stopChan, ncc.wg, ncc.watchFactory, resourceHandler)
+}
+
+// InitDispatcherControllers creates a workqueue-based pod controller for use
+// with the namespaced resource dispatcher instead of per-network retryPods.
+func (ncc *networkClusterController) InitDispatcherControllers(
+	registerWithDispatcher func(namespaces []string),
+) {
+	ncc.registerWithDispatcher = registerWithDispatcher
+
+	ncc.podCtrl = controller.NewReconciler(
+		fmt.Sprintf("cm-pod-%s", ncc.GetNetworkName()),
+		&controller.ReconcilerConfig{
+			Reconcile: func(key string) error {
+				return ncc.reconcilePodByKey(key)
+			},
+			Threadiness: 1,
+			MaxAttempts: controller.InfiniteAttempts,
+		},
+	)
+}
+
+// GetPodCtrl returns the dispatcher-based pod controller.
+func (ncc *networkClusterController) GetPodCtrl() controller.Reconciler {
+	return ncc.podCtrl
+}
+
+func (ncc *networkClusterController) reconcilePodByKey(key string) error {
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		return err
+	}
+
+	pod, err := ncc.watchFactory.GetPod(namespace, name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return ncc.podAllocator.Reconcile(nil, pod)
 }
 
 // Cleanup the subnet annotations from the node for the User Defined Networks

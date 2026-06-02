@@ -28,6 +28,7 @@ import (
 	udntemplate "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/userdefinednetwork/template"
 	vtepcontroller "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/vtep"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
+	controllermanager "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controllermanager"
 	nodecontroller "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controllers/node"
 	networkconnectclientset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/clusternetworkconnect/v1/apis/clientset/versioned"
 	rainformer "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/routeadvertisements/v1/apis/informers/externalversions/routeadvertisements/v1"
@@ -77,6 +78,10 @@ type ClusterManager struct {
 	noOverlayController  *nooverlay.Controller
 	managedBGPController *managedbgp.Controller
 	vtepController       *vtepcontroller.Controller
+
+	// nsResourceDispatcher dispatches pod events to per-network workqueues
+	// based on namespace, replacing per-network informer handlers.
+	nsResourceDispatcher *controllermanager.NamespacedResourceDispatcher
 }
 
 // NewClusterManager creates a new cluster manager to manage the cluster nodes.
@@ -236,6 +241,12 @@ func (cm *ClusterManager) Start(ctx context.Context) error {
 		return err
 	}
 
+	// Start pod dispatcher before network controllers so they can register
+	cm.nsResourceDispatcher = controllermanager.NewNamespacedResourceDispatcher()
+	if err := cm.nsResourceDispatcher.StartPodOnly(cm.wf); err != nil {
+		return fmt.Errorf("failed to start pod dispatcher: %w", err)
+	}
+
 	// Start networkManager before other controllers
 	if err := cm.networkManager.Start(); err != nil {
 		return err
@@ -364,10 +375,27 @@ func (cm *ClusterManager) Stop() {
 		cm.noOverlayController = nil
 	}
 	cm.nodeController.Stop()
+	if cm.nsResourceDispatcher != nil {
+		cm.nsResourceDispatcher.StopPodOnly(cm.wf)
+	}
 }
 
 func (cm *ClusterManager) NewNetworkController(netInfo util.NetInfo) (networkmanager.NetworkController, error) {
-	return cm.udnClusterManager.NewNetworkController(netInfo)
+	ncc, err := cm.udnClusterManager.NewNetworkController(netInfo)
+	if err != nil {
+		return nil, err
+	}
+	if cm.nsResourceDispatcher != nil {
+		if sncc, ok := ncc.(*networkClusterController); ok {
+			dispatcher := cm.nsResourceDispatcher
+			sncc.InitDispatcherControllers(func(namespaces []string) {
+				dispatcher.AddControllers(namespaces, &controllermanager.NamespacedResourceControllers{
+					Pod: sncc.GetPodCtrl(),
+				})
+			})
+		}
+	}
+	return ncc, nil
 }
 
 func (cm *ClusterManager) GetDefaultNetworkController() networkmanager.ReconcilableNetworkController {

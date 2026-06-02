@@ -80,6 +80,27 @@ func (d *NamespacedResourceDispatcher) Start(wf *factory.WatchFactory) error {
 	return nil
 }
 
+// StartPodOnly registers only the pod event handler. Use this when the caller
+// only needs pod dispatch (e.g. cluster-manager pod allocation).
+func (d *NamespacedResourceDispatcher) StartPodOnly(wf *factory.WatchFactory) error {
+	var err error
+	d.podHandler, err = wf.PodCoreInformer().Informer().AddEventHandler(
+		factory.WithUpdateHandlingForObjReplace(cache.ResourceEventHandlerFuncs{
+			AddFunc:    d.onPodAdd,
+			UpdateFunc: d.onPodUpdate,
+		}))
+	if err != nil {
+		return err
+	}
+	klog.Infof("Namespaced resource dispatcher started (pods only)")
+	return nil
+}
+
+// StopPodOnly removes the pod event handler.
+func (d *NamespacedResourceDispatcher) StopPodOnly(wf *factory.WatchFactory) {
+	d.removeHandler(wf.PodCoreInformer().Informer(), &d.podHandler)
+}
+
 // StartNetworkPolicyHandler registers the network policy event handler. Called
 // separately because the network policy informer may not be initialized in all
 // configurations.
