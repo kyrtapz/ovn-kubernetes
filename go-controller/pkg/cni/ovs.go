@@ -8,15 +8,17 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ovn-kubernetes/libovsdb/cache"
 	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
+	"github.com/ovn-kubernetes/libovsdb/model"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/klog/v2"
 	kexec "k8s.io/utils/exec"
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/libovsdb/ops/ovs"
-	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/telemetry"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/vswitchd"
@@ -31,6 +33,69 @@ var ovsDBClient libovsdbclient.Client
 // avoiding fork/exec of ovs-vsctl.
 func SetOVSDBClient(c libovsdbclient.Client) {
 	ovsDBClient = c
+}
+
+type ovsPortEvent struct {
+	installed bool
+	active    bool
+}
+
+type ovsPortWaiter struct {
+	ifaceID string
+	ch      chan ovsPortEvent
+}
+
+// ovnInstalledWatcher routes libovsdb Interface cache updates to CNI
+// goroutines waiting for ovn-installed. Single global handler, O(1) dispatch.
+type ovnInstalledWatcher struct {
+	waiters sync.Map // ifaceName → *ovsPortWaiter
+}
+
+var portWatcher *ovnInstalledWatcher
+
+func initPortWatcher(c libovsdbclient.Client) {
+	portWatcher = &ovnInstalledWatcher{}
+	c.Cache().AddEventHandler(&cache.EventHandlerFuncs{
+		UpdateFunc: func(_ string, _ model.Model, newModel model.Model) {
+			iface, ok := newModel.(*vswitchd.Interface)
+			if !ok {
+				return
+			}
+			val, ok := portWatcher.waiters.Load(iface.Name)
+			if !ok {
+				return
+			}
+			waiter := val.(*ovsPortWaiter)
+			if iface.ExternalIDs["iface-id"] != waiter.ifaceID {
+				select {
+				case waiter.ch <- ovsPortEvent{active: false}:
+				default:
+				}
+				return
+			}
+			if iface.ExternalIDs["ovn-installed"] == "true" {
+				select {
+				case waiter.ch <- ovsPortEvent{installed: true, active: true}:
+				default:
+				}
+			}
+		},
+		DeleteFunc: func(_ string, m model.Model) {
+			iface, ok := m.(*vswitchd.Interface)
+			if !ok {
+				return
+			}
+			val, ok := portWatcher.waiters.Load(iface.Name)
+			if !ok {
+				return
+			}
+			waiter := val.(*ovsPortWaiter)
+			select {
+			case waiter.ch <- ovsPortEvent{active: false}:
+			default:
+			}
+		},
+	})
 }
 
 func SetExec(r kexec.Interface) error {
@@ -231,51 +296,75 @@ func waitForPodInterface(ctx context.Context, ifInfo *PodInterfaceInfo,
 	ifaceName, ifaceID string, getter PodInfoGetter,
 	namespace, name, initialPodUID string) error {
 	waitStart := time.Now()
-
 	mac := ifInfo.MAC.String()
 	ifAddrs := ifInfo.IPs
+
+	installed, active, err := getInterfaceOVNInstalled(ifaceName, ifaceID)
+	if err == nil && installed {
+		emitOVNInstalled(waitStart, namespace, name, ifInfo, ifaceName)
+		return nil
+	}
+	if err == nil && !active {
+		return fmt.Errorf("OVS sandbox port %s is no longer active (probably due to a subsequent CNI ADD)", ifaceName)
+	}
+
+	waiter := &ovsPortWaiter{
+		ifaceID: ifaceID,
+		ch:      make(chan ovsPortEvent, 1),
+	}
+	portWatcher.waiters.Store(ifaceName, waiter)
+	defer portWatcher.waiters.Delete(ifaceName)
+
+	// Re-check after registration to close race window.
+	installed, active, err = getInterfaceOVNInstalled(ifaceName, ifaceID)
+	if err == nil && installed {
+		emitOVNInstalled(waitStart, namespace, name, ifInfo, ifaceName)
+		return nil
+	}
+	if err == nil && !active {
+		return fmt.Errorf("OVS sandbox port %s is no longer active (probably due to a subsequent CNI ADD)", ifaceName)
+	}
+
+	cancelTicker := time.NewTicker(200 * time.Millisecond)
+	defer cancelTicker.Stop()
+
 	for {
 		select {
+		case ev := <-waiter.ch:
+			if !ev.active {
+				return fmt.Errorf("OVS sandbox port %s is no longer active (probably due to a subsequent CNI ADD)", ifaceName)
+			}
+			if ev.installed {
+				emitOVNInstalled(waitStart, namespace, name, ifInfo, ifaceName)
+				return nil
+			}
+		case <-cancelTicker.C:
+			if err := checkCancelSandbox(mac, getter, namespace, name, ifInfo.NADKey, initialPodUID); err != nil {
+				return fmt.Errorf("%v waiting for OVS port binding for %s %v", err, mac, ifAddrs)
+			}
 		case <-ctx.Done():
 			errDetail := "timed out"
 			if ctx.Err() == context.Canceled {
 				errDetail = "canceled while"
 			}
-			waitDuration := time.Since(waitStart)
 			telemetry.Emit(telemetry.Event{
 				Event:   "cni_ovn_installed_failed",
 				Pod:     namespace + "/" + name,
 				Network: ifInfo.NetName,
-				Elapsed: float64(waitDuration.Microseconds()) / 1000.0,
+				Elapsed: float64(time.Since(waitStart).Microseconds()) / 1000.0,
 				Detail:  map[string]any{"iface": ifaceName, "err": errDetail},
 			})
 			return fmt.Errorf("%s waiting for OVS port binding (ovn-installed) for %s %v", errDetail, mac, ifAddrs)
-		default:
-			installed, active, err := getInterfaceOVNInstalled(ifaceName, ifaceID)
-			if err == nil && !active {
-				return fmt.Errorf("OVS sandbox port %s is no longer active (probably due to a subsequent "+
-					"CNI ADD)", ifaceName)
-			}
-			if err == nil && installed {
-				waitDuration := time.Since(waitStart)
-				telemetry.Emit(telemetry.Event{
-					Event:   "cni_ovn_installed",
-					Pod:     namespace + "/" + name,
-					Network: ifInfo.NetName,
-					Elapsed: float64(waitDuration.Microseconds()) / 1000.0,
-					Detail:  map[string]any{"iface": ifaceName},
-				})
-				return nil
-			}
-			klog.V(5).Infof("Still waiting for OVS port %s to have ovn-installed=true", ifaceName)
-
-			if err := checkCancelSandbox(mac, getter, namespace, name, ifInfo.NADKey, initialPodUID); err != nil {
-				return fmt.Errorf("%v waiting for OVS port binding for %s %v", err, mac, ifAddrs)
-			}
-
-			waitTime := 200 * time.Millisecond
-			time.Sleep(waitTime)
-			metrics.MetricOvsInterfaceUpWait.Add(waitTime.Seconds())
 		}
 	}
+}
+
+func emitOVNInstalled(waitStart time.Time, namespace, name string, ifInfo *PodInterfaceInfo, ifaceName string) {
+	telemetry.Emit(telemetry.Event{
+		Event:   "cni_ovn_installed",
+		Pod:     namespace + "/" + name,
+		Network: ifInfo.NetName,
+		Elapsed: float64(time.Since(waitStart).Microseconds()) / 1000.0,
+		Detail:  map[string]any{"iface": ifaceName},
+	})
 }

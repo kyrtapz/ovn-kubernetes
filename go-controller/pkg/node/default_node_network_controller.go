@@ -858,6 +858,8 @@ func (nc *DefaultNodeNetworkController) Init(ctx context.Context) error {
 	}
 	klog.Infof("Node %s ready for ovn initialization with subnet %s", nc.name, util.JoinIPNets(subnets, ","))
 
+	util.SetOVSOfPortClient(nc.ovsClient)
+
 	// Create CNI Server
 	if config.IsModeDPUHost() || config.IsModeFull() {
 		kclient, ok := nc.Kube.(*kube.Kube)

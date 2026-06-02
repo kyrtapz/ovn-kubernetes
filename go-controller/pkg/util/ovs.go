@@ -18,11 +18,14 @@ import (
 
 	"github.com/spf13/afero"
 
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
 	"k8s.io/klog/v2"
 	kexec "k8s.io/utils/exec"
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/libovsdb/ops/ovs"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/vswitchd"
 )
 
 const (
@@ -332,13 +335,54 @@ func RunOVSVsctl(args ...string) (string, string, error) {
 	return strings.Trim(strings.TrimSpace(stdout.String()), "\""), stderr.String(), err
 }
 
-// GetOVSOfPort runs get ofport via ovs-vsctl and handle special return strings.
+var ovsOfPortClient libovsdbclient.Client
+
+// SetOVSOfPortClient sets the libovsdb client used by GetOVSOfPort to avoid
+// fork/exec of ovs-vsctl. When set, GetOVSOfPort uses a cache lookup instead.
+func SetOVSOfPortClient(c libovsdbclient.Client) {
+	ovsOfPortClient = c
+}
+
+// GetOVSOfPort returns the ofport for an OVS interface. When a libovsdb client
+// is available (via SetOVSOfPortClient), uses a cache lookup. Otherwise falls
+// back to ovs-vsctl fork/exec.
 func GetOVSOfPort(args ...string) (string, string, error) {
+	if ovsOfPortClient != nil {
+		ifaceName := extractInterfaceName(args)
+		if ifaceName != "" {
+			ifaces, err := ovs.FindInterfacesWithPredicate(ovsOfPortClient, func(i *vswitchd.Interface) bool {
+				return i.Name == ifaceName
+			})
+			if err != nil {
+				return "", "", err
+			}
+			if len(ifaces) == 0 {
+				return "", "", fmt.Errorf("interface %s not found in OVSDB cache", ifaceName)
+			}
+			if ifaces[0].Ofport == nil || *ifaces[0].Ofport <= 0 {
+				return "", "", fmt.Errorf("interface %s ofport not yet assigned", ifaceName)
+			}
+			return fmt.Sprintf("%d", *ifaces[0].Ofport), "", nil
+		}
+	}
+
 	stdout, stderr, err := RunOVSVsctl(args...)
 	if stdout == "[]" || stdout == "-1" {
 		err = fmt.Errorf("%s return invalid result %s err %s", args, stdout, err)
 	}
 	return stdout, stderr, err
+}
+
+// extractInterfaceName parses ovs-vsctl get Interface args to find the
+// interface name. Handles both "get Interface <name> ofport" and
+// "--if-exists get Interface <name> ofport" forms.
+func extractInterfaceName(args []string) string {
+	for i, arg := range args {
+		if strings.EqualFold(arg, "interface") && i+2 < len(args) && strings.EqualFold(args[i+2], "ofport") {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 func GetDatapathType(bridge string) (string, error) {
