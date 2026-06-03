@@ -21,7 +21,7 @@ import (
 
 // FIXME(mk) - Within GH VM, if I need to create a new NetNs. I see the following error:
 // "failed to create new network namespace: mount --make-rshared /run/user/1001/netns failed: "operation not permitted""
-var _ = ginkgo.XDescribe("IP Rule Manager", func() {
+var _ = ginkgo.Describe("IP Rule Manager", func() {
 	var stopCh chan struct{}
 	var wg *sync.WaitGroup
 	var testNS ns.NetNS

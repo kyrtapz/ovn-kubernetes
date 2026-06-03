@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/vishvananda/netlink"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 
 	utilerrors "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util/errors"
@@ -25,35 +27,39 @@ type Interface interface {
 	OwnPriority(priority int) error
 }
 
-type ipRule struct {
+type managedRule struct {
 	rule     *netlink.Rule
 	metadata string
-	delete   bool
 }
 
 type Controller struct {
-	mu    *sync.Mutex
-	rules []ipRule
-	// only explicit IP rules (via fn Add) are allowed when a priority is owned. Other IP rules will be removed.
+	mu            sync.Mutex
+	rules         map[string]*managedRule     // ruleKey -> managed rule
+	metadataIndex map[string]sets.Set[string] // metadata -> set of ruleKeys
 	ownPriorities map[int]bool
 	v4            bool
 	v6            bool
+	family        int
 }
 
-// NewController creates a new linux IP rule manager
 func NewController(v4, v6 bool) *Controller {
+	family := netlink.FAMILY_ALL
+	if v4 && !v6 {
+		family = netlink.FAMILY_V4
+	} else if v6 && !v4 {
+		family = netlink.FAMILY_V6
+	}
 	return &Controller{
-		mu:            &sync.Mutex{},
-		rules:         make([]ipRule, 0),
-		ownPriorities: make(map[int]bool, 0),
+		rules:         make(map[string]*managedRule),
+		metadataIndex: make(map[string]sets.Set[string]),
+		ownPriorities: make(map[int]bool),
 		v4:            v4,
 		v6:            v6,
+		family:        family,
 	}
 }
 
-// Run starts manages linux IP rules
 func (rm *Controller) Run(stopCh <-chan struct{}, syncPeriod time.Duration) {
-	var err error
 	ticker := time.NewTicker(syncPeriod)
 	defer ticker.Stop()
 
@@ -63,7 +69,7 @@ func (rm *Controller) Run(stopCh <-chan struct{}, syncPeriod time.Duration) {
 			return
 		case <-ticker.C:
 			rm.mu.Lock()
-			if err = rm.reconcile(); err != nil {
+			if err := rm.reconcile(); err != nil {
 				klog.Errorf("IP Rule manager: failed to reconcile (retry in %s): %v", syncPeriod.String(), err)
 			}
 			rm.mu.Unlock()
@@ -71,73 +77,90 @@ func (rm *Controller) Run(stopCh <-chan struct{}, syncPeriod time.Duration) {
 	}
 }
 
-// Add ensures an IP rule is applied even if it is altered by something else, it will be restored
 func (rm *Controller) Add(rule netlink.Rule) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	// check if we are already managing this rule and if so, no-op
-	for _, existingRule := range rm.rules {
-		if areNetlinkRulesEqual(existingRule.rule, &rule) {
-			return nil
-		}
+
+	key := ruleKey(&rule)
+	if _, exists := rm.rules[key]; exists {
+		return nil
 	}
-	rm.rules = append(rm.rules, ipRule{rule: &rule}) // empty metadata
-	return rm.reconcile()
+
+	if err := netlink.RuleAdd(&rule); err != nil && !isEEXIST(err) {
+		return err
+	}
+	rm.rules[key] = &managedRule{rule: &rule}
+	return nil
 }
 
-// AddWithMetadata ensures an IP rule along with its metadata is applied even if it is altered by something else, it will be restored
 func (rm *Controller) AddWithMetadata(rule netlink.Rule, metadata string) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	// check if we are already managing this rule and if so, no-op
-	for _, existingRule := range rm.rules {
-		if areNetlinkRulesEqual(existingRule.rule, &rule) {
-			return nil
-		}
-	}
-	rm.rules = append(rm.rules, ipRule{rule: &rule, metadata: metadata})
-	return rm.reconcile()
-}
 
-// Delete stops managed an IP rule and ensures its deleted
-func (rm *Controller) Delete(rule netlink.Rule) error {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	var reconcileNeeded bool
-	for i, r := range rm.rules {
-		if areNetlinkRulesEqual(r.rule, &rule) {
-			rm.rules[i].delete = true
-			reconcileNeeded = true
-			break
-		}
+	key := ruleKey(&rule)
+	if _, exists := rm.rules[key]; exists {
+		return nil
 	}
-	if reconcileNeeded {
-		return rm.reconcile()
+
+	if err := netlink.RuleAdd(&rule); err != nil && !isEEXIST(err) {
+		return err
+	}
+	rm.rules[key] = &managedRule{rule: &rule, metadata: metadata}
+	if metadata != "" {
+		if rm.metadataIndex[metadata] == nil {
+			rm.metadataIndex[metadata] = sets.New[string]()
+		}
+		rm.metadataIndex[metadata].Insert(key)
 	}
 	return nil
 }
 
-// DeleteWithMetadata stops managing all IP rules with the provided metadata and ensures they are all deleted
+func (rm *Controller) Delete(rule netlink.Rule) error {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	key := ruleKey(&rule)
+	mr, exists := rm.rules[key]
+	if !exists {
+		return nil
+	}
+
+	if err := netlink.RuleDel(&rule); err != nil && !isENOENT(err) {
+		return err
+	}
+	rm.removeFromIndex(key, mr.metadata)
+	delete(rm.rules, key)
+	return nil
+}
+
 func (rm *Controller) DeleteWithMetadata(metadata string) error {
 	if metadata == "" {
 		return nil
 	}
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	var reconcileNeeded bool
-	for i, r := range rm.rules {
-		if r.metadata == metadata {
-			rm.rules[i].delete = true // marks all rules matching that metadata as ready for deletion
-			reconcileNeeded = true
+
+	keys, exists := rm.metadataIndex[metadata]
+	if !exists {
+		return nil
+	}
+
+	var errors []error
+	for key := range keys {
+		mr := rm.rules[key]
+		if mr == nil {
+			continue
 		}
+		if err := netlink.RuleDel(mr.rule); err != nil && !isENOENT(err) {
+			errors = append(errors, err)
+			continue
+		}
+		delete(rm.rules, key)
 	}
-	if reconcileNeeded {
-		return rm.reconcile()
-	}
-	return nil
+	delete(rm.metadataIndex, metadata)
+	return utilerrors.Join(errors...)
 }
 
-// OwnPriority ensures any IP rules observed with priority 'priority' must be specified otherwise its removed
 func (rm *Controller) OwnPriority(priority int) error {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
@@ -145,72 +168,76 @@ func (rm *Controller) OwnPriority(priority int) error {
 	return rm.reconcile()
 }
 
+// reconcile ensures kernel state matches desired state. Runs periodically, not per-mutation.
 func (rm *Controller) reconcile() error {
 	start := time.Now()
 	defer func() {
 		klog.V(5).Infof("Reconciling IP rules took %v", time.Since(start))
 	}()
-	var family int
-	if rm.v4 && rm.v6 {
-		family = netlink.FAMILY_ALL
-	} else if rm.v4 {
-		family = netlink.FAMILY_V4
-	} else if rm.v6 {
-		family = netlink.FAMILY_V6
-	}
 
-	rulesFound, err := netlink.RuleList(family)
+	rulesFound, err := netlink.RuleList(rm.family)
 	if err != nil {
 		return err
 	}
+
+	// Build kernel rule set for O(1) lookups
+	kernelSet := make(map[string]*netlink.Rule, len(rulesFound))
+	for i := range rulesFound {
+		kernelSet[ruleKey(&rulesFound[i])] = &rulesFound[i]
+	}
+
 	var errors []error
-	rulesToKeep := make([]ipRule, 0)
-	for _, r := range rm.rules {
-		// delete IP rule by first checking if it exists and if so, delete it
-		if r.delete {
-			if found, foundRoute := isNetlinkRuleInSlice(rulesFound, r.rule); found {
-				if err = netlink.RuleDel(foundRoute); err != nil {
-					// retry later
-					rulesToKeep = append(rulesToKeep, r)
-					errors = append(errors, err)
-				}
-			}
-		} else {
-			// add IP rule by first checking if it exists and if not, add it
-			rulesToKeep = append(rulesToKeep, r)
-			if found, _ := isNetlinkRuleInSlice(rulesFound, r.rule); !found {
-				if err = netlink.RuleAdd(r.rule); err != nil {
-					errors = append(errors, err)
-				}
+
+	// Restore managed rules missing from kernel
+	for key, mr := range rm.rules {
+		if _, inKernel := kernelSet[key]; !inKernel {
+			if err := netlink.RuleAdd(mr.rule); err != nil && !isEEXIST(err) {
+				errors = append(errors, err)
 			}
 		}
 	}
 
-	var found bool
-	for priority := range rm.ownPriorities {
-		for _, ruleFound := range rulesFound {
-			if ruleFound.Priority != priority {
-				continue
-			}
-			found = false
-			for _, ruleWanted := range rm.rules {
-				if areNetlinkRulesEqual(ruleWanted.rule, &ruleFound) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				klog.Infof("Rule manager: deleting stale IP rule (%s) found at priority %d", ruleFound.String(), priority)
-				if err = netlink.RuleDel(&ruleFound); err != nil {
-					errors = append(errors, fmt.Errorf("failed to delete stale IP rule (%s) found at priority %d: %v",
-						ruleFound.String(), priority, err))
-				}
+	// Remove stale rules at owned priorities
+	for i := range rulesFound {
+		r := &rulesFound[i]
+		if !rm.ownPriorities[r.Priority] {
+			continue
+		}
+		key := ruleKey(r)
+		if _, managed := rm.rules[key]; !managed {
+			klog.Infof("Rule manager: deleting stale IP rule (%s) found at priority %d", r.String(), r.Priority)
+			if err := netlink.RuleDel(r); err != nil {
+				errors = append(errors, fmt.Errorf("failed to delete stale IP rule (%s) found at priority %d: %v",
+					r.String(), r.Priority, err))
 			}
 		}
 	}
 
-	rm.rules = rulesToKeep
 	return utilerrors.Join(errors...)
+}
+
+func (rm *Controller) removeFromIndex(key, metadata string) {
+	if metadata == "" {
+		return
+	}
+	if s, ok := rm.metadataIndex[metadata]; ok {
+		s.Delete(key)
+		if s.Len() == 0 {
+			delete(rm.metadataIndex, metadata)
+		}
+	}
+}
+
+func ruleKey(r *netlink.Rule) string {
+	srcStr := "<nil>"
+	if r.Src != nil {
+		srcStr = r.Src.String()
+	}
+	dstStr := "<nil>"
+	if r.Dst != nil {
+		dstStr = r.Dst.String()
+	}
+	return fmt.Sprintf("%d|%d|%d|%d|%s|%s", r.Priority, r.Table, r.Type, r.Mark, srcStr, dstStr)
 }
 
 func areNetlinkRulesEqual(r1, r2 *netlink.Rule) bool {
@@ -255,4 +282,12 @@ func isNetlinkRuleInSlice(rules []netlink.Rule, candidate *netlink.Rule) (bool, 
 		}
 	}
 	return false, netlink.NewRule()
+}
+
+func isEEXIST(err error) bool {
+	return err == syscall.EEXIST
+}
+
+func isENOENT(err error) bool {
+	return err == syscall.ENOENT
 }
