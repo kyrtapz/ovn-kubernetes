@@ -1157,11 +1157,21 @@ func ipDiff(oldIPs, newIPs []string) (toAdd, toRemove []string) {
 // deletePodFromAddrSetIPs removes all entries for a given address set key from podToAddrSetIPs.
 func (m *AddressSetManager) deletePodAddrSetIPsForKey(addrSetKey string) {
 	m.podToAddrSetIPs.Range(func(key, value any) bool {
-		ips := value.(perAddrSetIPs)
-		delete(ips, addrSetKey)
-		if len(ips) == 0 {
-			m.podToAddrSetIPs.Delete(key)
+		orig := value.(perAddrSetIPs)
+		if _, exists := orig[addrSetKey]; !exists {
+			return true
 		}
+		if len(orig) == 1 {
+			m.podToAddrSetIPs.Delete(key)
+			return true
+		}
+		cp := make(perAddrSetIPs, len(orig)-1)
+		for k, v := range orig {
+			if k != addrSetKey {
+				cp[k] = v
+			}
+		}
+		m.podToAddrSetIPs.Store(key, cp)
 		return true
 	})
 }

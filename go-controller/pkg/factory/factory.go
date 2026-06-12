@@ -1352,7 +1352,6 @@ func (wf *WatchFactory) addHandler(objType reflect.Type, namespace string, sel l
 
 	filterFunc := func(obj interface{}) bool {
 		if namespace == "" && sel == nil {
-			// Unfiltered handler
 			return true
 		}
 		meta, err := getObjectMeta(objType, obj)
@@ -1360,9 +1359,8 @@ func (wf *WatchFactory) addHandler(objType reflect.Type, namespace string, sel l
 			klog.Errorf("Watch handler filter error: %v", err)
 			return false
 		}
-		if namespace != "" && meta.Namespace != namespace {
-			return false
-		}
+		// Namespace filtering is handled by nsHandlers map dispatch,
+		// so only check label selector here.
 		if sel != nil && !sel.Matches(labels.Set(meta.Labels)) {
 			return false
 		}
@@ -1407,7 +1405,7 @@ func (wf *WatchFactory) addHandler(objType reflect.Type, namespace string, sel l
 	}
 
 	handlerID := atomic.AddUint64(&wf.handlerCounter.counter, 1)
-	handler := inf.addHandler(wf.internalInformerIndex, handlerID, priority, filterFunc, funcs, items)
+	handler := inf.addHandler(wf.internalInformerIndex, handlerID, priority, filterFunc, funcs, items, namespace)
 	klog.V(5).Infof("Added %v event handler %d", objType, handler.id)
 	return handler, nil
 }

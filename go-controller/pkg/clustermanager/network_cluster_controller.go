@@ -936,13 +936,29 @@ func (ncc *networkClusterController) Reconcile(netInfo util.NetInfo) error {
 			}
 		}
 	}
+	oldNamespaces := sets.NewString(ncc.GetNADNamespaces()...)
 	reconcilePendingPods := ncc.updateNADKeysChanged(nadKeys)
 	// update network information, point of no return
 	err := util.ReconcileNetInfo(ncc.ReconcilableNetInfo, netInfo)
 	if err != nil {
 		klog.Errorf("Failed to reconcile network %s: %v", ncc.GetNetworkName(), err)
 	}
-	if reconcilePendingPods && ncc.retryPods != nil {
+	if ncc.registerWithDispatcher != nil {
+		ncc.registerWithDispatcher(ncc.GetNetInfo().GetNADNamespaces())
+		newNamespaces := sets.NewString(ncc.GetNetInfo().GetNADNamespaces()...).Difference(oldNamespaces).List()
+		if len(newNamespaces) > 0 {
+			for _, ns := range newNamespaces {
+				pods, err := ncc.watchFactory.GetPods(ns)
+				if err != nil {
+					klog.Errorf("Failed to list pods in namespace %s for network %s: %v", ns, ncc.GetNetworkName(), err)
+					continue
+				}
+				for _, pod := range pods {
+					ncc.podCtrl.Reconcile(fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+				}
+			}
+		}
+	} else if reconcilePendingPods && ncc.retryPods != nil {
 		if err := objretry.RequeuePendingPods(ncc.watchFactory, ncc.GetNetInfo(), ncc.retryPods); err != nil {
 			klog.Errorf("Failed to requeue pending pods for network %s: %v", ncc.GetNetworkName(), err)
 		}

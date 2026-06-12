@@ -60,6 +60,10 @@ type Handler struct {
 	// indicates which informer.internalInformers index to use
 	// clients are distributed between internal informers
 	internalInformerIndex int
+
+	// namespace is set for namespace-scoped handlers stored in nsHandlers.
+	// Empty for global handlers.
+	namespace string
 }
 
 func (h *Handler) OnAdd(obj interface{}, isInInitialList bool) {
@@ -120,6 +124,9 @@ type internalInformer struct {
 	// NOTE: we can have multiple handlers with the same priority hence the value
 	// is a map of handlers keyed by its unique id.
 	handlers map[int]map[uint64]*Handler
+	// nsHandlers indexes namespace-scoped handlers by namespace for O(1) dispatch.
+	// namespace -> priority -> handler id -> handler
+	nsHandlers map[string]map[int]map[uint64]*Handler
 	// queueMap handles distributing events across a queued handler's queues
 	queueMap *queueMap
 	// hasHandlers is an atomic used to determine if this internal informer actually has handlers attached to it or not
@@ -141,9 +148,27 @@ type informer struct {
 func (inf *internalInformer) forEachQueuedHandler(f func(h *Handler)) {
 	inf.RLock()
 	defer inf.RUnlock()
-	for priority := 0; priority <= minHandlerPriority; priority++ { // loop over priority highest to lowest
+	for priority := 0; priority <= minHandlerPriority; priority++ {
 		for _, handler := range inf.handlers[priority] {
 			f(handler)
+		}
+	}
+}
+
+// forEachQueuedHandlerForNS runs global handlers and namespace-scoped handlers
+// matching the given namespace. Namespace-scoped handlers skip the namespace
+// check in their filter since the map lookup already matched.
+func (inf *internalInformer) forEachQueuedHandlerForNS(namespace string, f func(h *Handler)) {
+	inf.RLock()
+	defer inf.RUnlock()
+	for priority := 0; priority <= minHandlerPriority; priority++ {
+		for _, handler := range inf.handlers[priority] {
+			f(handler)
+		}
+		if namespace != "" {
+			for _, handler := range inf.nsHandlers[namespace][priority] {
+				f(handler)
+			}
 		}
 	}
 }
@@ -152,14 +177,30 @@ func (inf *internalInformer) forEachQueuedHandlerReversed(f func(h *Handler)) {
 	inf.RLock()
 	defer inf.RUnlock()
 
-	for priority := minHandlerPriority; priority >= 0; priority-- { // loop over priority lowest to highest
+	for priority := minHandlerPriority; priority >= 0; priority-- {
 		for _, handler := range inf.handlers[priority] {
 			f(handler)
 		}
 	}
 }
 
-func (i *informer) addHandler(internalInformerIndex int, id uint64, priority int, filterFunc func(obj interface{}) bool, funcs cache.ResourceEventHandler, existingItems []interface{}) *Handler {
+func (inf *internalInformer) forEachQueuedHandlerForNSReversed(namespace string, f func(h *Handler)) {
+	inf.RLock()
+	defer inf.RUnlock()
+
+	for priority := minHandlerPriority; priority >= 0; priority-- {
+		for _, handler := range inf.handlers[priority] {
+			f(handler)
+		}
+		if namespace != "" {
+			for _, handler := range inf.nsHandlers[namespace][priority] {
+				f(handler)
+			}
+		}
+	}
+}
+
+func (i *informer) addHandler(internalInformerIndex int, id uint64, priority int, filterFunc func(obj interface{}) bool, funcs cache.ResourceEventHandler, existingItems []interface{}, namespace string) *Handler {
 	handler := &Handler{
 		cache.FilteringResourceEventHandler{
 			FilterFunc: filterFunc,
@@ -169,6 +210,7 @@ func (i *informer) addHandler(internalInformerIndex int, id uint64, priority int
 		handlerAlive,
 		priority,
 		internalInformerIndex,
+		namespace,
 	}
 
 	// Send existing items to the handler's add function; informers usually
@@ -178,11 +220,23 @@ func (i *informer) addHandler(internalInformerIndex int, id uint64, priority int
 
 	intInf := i.internalInformers[internalInformerIndex]
 
-	_, ok := intInf.handlers[priority]
-	if !ok {
-		intInf.handlers[priority] = make(map[uint64]*Handler)
+	if namespace != "" {
+		if intInf.nsHandlers == nil {
+			intInf.nsHandlers = make(map[string]map[int]map[uint64]*Handler)
+		}
+		if intInf.nsHandlers[namespace] == nil {
+			intInf.nsHandlers[namespace] = make(map[int]map[uint64]*Handler)
+		}
+		if intInf.nsHandlers[namespace][priority] == nil {
+			intInf.nsHandlers[namespace][priority] = make(map[uint64]*Handler)
+		}
+		intInf.nsHandlers[namespace][priority][id] = handler
+	} else {
+		if _, ok := intInf.handlers[priority]; !ok {
+			intInf.handlers[priority] = make(map[uint64]*Handler)
+		}
+		intInf.handlers[priority][id] = handler
 	}
-	intInf.handlers[priority][id] = handler
 
 	return handler
 }
@@ -201,22 +255,46 @@ func (i *informer) removeHandler(handler *Handler) {
 		intInf.Lock()
 		defer intInf.Unlock()
 		removed := false
-		// track overall how many handlers this internal informer has
 		numHandlers := 0
-		for priority := range intInf.handlers { // loop over priority
-			if _, ok := intInf.handlers[priority]; !ok {
-				continue // protection against nil map as value
+
+		if handler.namespace != "" {
+			if nsMap, ok := intInf.nsHandlers[handler.namespace]; ok {
+				for priority := range nsMap {
+					if _, ok := nsMap[priority][handler.id]; ok {
+						delete(nsMap[priority], handler.id)
+						removed = true
+						klog.V(5).Infof("Removed %v ns-scoped event handler %d for ns %s", i.oType, handler.id, handler.namespace)
+					}
+					if len(nsMap[priority]) == 0 {
+						delete(nsMap, priority)
+					}
+				}
+				if len(nsMap) == 0 {
+					delete(intInf.nsHandlers, handler.namespace)
+				}
 			}
-			if _, ok := intInf.handlers[priority][handler.id]; ok {
-				// Remove the handler
-				delete(intInf.handlers[priority], handler.id)
-				removed = true
-				klog.V(5).Infof("Removed %v event handler %d", i.oType, handler.id)
+		} else {
+			for priority := range intInf.handlers {
+				if _, ok := intInf.handlers[priority]; !ok {
+					continue
+				}
+				if _, ok := intInf.handlers[priority][handler.id]; ok {
+					delete(intInf.handlers[priority], handler.id)
+					removed = true
+					klog.V(5).Infof("Removed %v event handler %d", i.oType, handler.id)
+				}
 			}
-			numHandlers += len(intInf.handlers[priority])
 		}
 
-		// if this internal informer has no handlers, update the atomic
+		for priority := range intInf.handlers {
+			numHandlers += len(intInf.handlers[priority])
+		}
+		for _, nsMap := range intInf.nsHandlers {
+			for priority := range nsMap {
+				numHandlers += len(nsMap[priority])
+			}
+		}
+
 		if numHandlers == 0 {
 			atomic.StoreUint32(&intInf.hasHandlers, hasNoHandler)
 		}
@@ -396,34 +474,39 @@ func ensureObjectOnDelete(obj interface{}, expectedType reflect.Type) (interface
 func (i *informer) newFederatedQueuedHandler(internalInformerIndex int) cache.ResourceEventHandlerFuncs {
 	name := i.oType.Elem().Name()
 	intInf := i.internalInformers[internalInformerIndex]
+	getNamespace := func(obj interface{}) string {
+		if o, ok := obj.(metav1.Object); ok {
+			return o.GetNamespace()
+		}
+		return ""
+	}
 	return cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			// do not enqueue events to internal informer that has no handlers for better performance
 			if atomic.LoadUint32(&intInf.hasHandlers) == hasNoHandler {
 				return
 			}
 			intInf.queueMap.enqueueEvent(nil, obj, i.oType, false, func(e *event) {
 				metrics.MetricResourceUpdateCount.WithLabelValues(name, "add").Inc()
 				start := time.Now()
-				intInf.forEachQueuedHandler(func(h *Handler) {
+				ns := getNamespace(e.obj)
+				intInf.forEachQueuedHandlerForNS(ns, func(h *Handler) {
 					h.OnAdd(e.obj, false)
 				})
 				metrics.MetricResourceAddLatency.Observe(time.Since(start).Seconds())
 			})
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
-			// do not enqueue events to internal informer that has no handlers for better performance
 			if atomic.LoadUint32(&intInf.hasHandlers) == hasNoHandler {
 				return
 			}
 			intInf.queueMap.enqueueEvent(oldObj, newObj, i.oType, false, func(e *event) {
 				metrics.MetricResourceUpdateCount.WithLabelValues(name, "update").Inc()
 				start := time.Now()
-				intInf.forEachQueuedHandler(func(h *Handler) {
-					old := oldObj.(metav1.Object)
-					new := newObj.(metav1.Object)
+				old := oldObj.(metav1.Object)
+				new := newObj.(metav1.Object)
+				ns := new.GetNamespace()
+				intInf.forEachQueuedHandlerForNS(ns, func(h *Handler) {
 					if old.GetUID() != new.GetUID() {
-						// This occurs not so often, so log this occurance.
 						klog.Infof("Object %s/%s is replaced, invoking delete followed by add handler", new.GetNamespace(), new.GetName())
 						h.OnDelete(e.oldObj)
 						h.OnAdd(e.obj, false)
@@ -440,14 +523,14 @@ func (i *informer) newFederatedQueuedHandler(internalInformerIndex int) cache.Re
 				klog.Errorf("Error in DeleteFunc: %v", err)
 				return
 			}
-			// do not enqueue events to internal informer that has no handlers for better performance
 			if atomic.LoadUint32(&intInf.hasHandlers) == hasNoHandler {
 				return
 			}
 			intInf.queueMap.enqueueEvent(nil, realObj, i.oType, true, func(e *event) {
 				metrics.MetricResourceUpdateCount.WithLabelValues(name, "delete").Inc()
 				start := time.Now()
-				intInf.forEachQueuedHandlerReversed(func(h *Handler) {
+				ns := getNamespace(e.obj)
+				intInf.forEachQueuedHandlerForNSReversed(ns, func(h *Handler) {
 					h.OnDelete(e.obj)
 				})
 				metrics.MetricResourceDeleteLatency.Observe(time.Since(start).Seconds())

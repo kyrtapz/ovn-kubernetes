@@ -241,6 +241,10 @@ func (cm *ClusterManager) Start(ctx context.Context) error {
 		return err
 	}
 
+	if err := cm.setTopologyType(); err != nil {
+		return err
+	}
+
 	// Start pod dispatcher before network controllers so they can register
 	cm.nsResourceDispatcher = controllermanager.NewNamespacedResourceDispatcher()
 	if err := cm.nsResourceDispatcher.StartPodOnly(cm.wf); err != nil {
@@ -378,6 +382,22 @@ func (cm *ClusterManager) Stop() {
 	if cm.nsResourceDispatcher != nil {
 		cm.nsResourceDispatcher.StopPodOnly(cm.wf)
 	}
+}
+
+func (cm *ClusterManager) setTopologyType() error {
+	nodes, err := cm.wf.GetNodes()
+	if err != nil {
+		return fmt.Errorf("unable to list nodes while setting topology type for layer2: %w", err)
+	}
+	config.Layer2UsesTransitRouter = true
+	for _, node := range nodes {
+		if node.Annotations[util.Layer2TopologyVersion] != util.TransitRouterTopoVersion {
+			config.Layer2UsesTransitRouter = false
+			break
+		}
+	}
+	klog.Infof("Cluster manager layer2 transit router topology: %v", config.Layer2UsesTransitRouter)
+	return nil
 }
 
 func (cm *ClusterManager) NewNetworkController(netInfo util.NetInfo) (networkmanager.NetworkController, error) {

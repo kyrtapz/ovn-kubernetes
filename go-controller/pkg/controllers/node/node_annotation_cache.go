@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
@@ -71,7 +72,11 @@ func (c *NodeAnnotationCache) updateNodeAnnotationState(node *corev1.Node, updat
 		return nil
 	}
 	networkIDs, networkIDsErr := c.parseNetworkMapCached(node, util.OvnNetworkIDs, updateCache)
-	tunnelIDs, tunnelIDsErr := c.parseNetworkMapCached(node, types.UDNLayer2NodeGRLRPTunnelIDAnnotation, updateCache)
+	var tunnelIDs map[string]string
+	var tunnelIDsErr error
+	if !config.Layer2UsesTransitRouter {
+		tunnelIDs, tunnelIDsErr = c.parseNetworkMapCached(node, types.UDNLayer2NodeGRLRPTunnelIDAnnotation, updateCache)
+	}
 	l3GatewayConfigs, l3GatewayConfigsErr := c.parseGatewayConfigMapCached(node, util.OvnNodeL3GatewayConfig, updateCache)
 	subnets, subnetsErr := c.parseSubnetMapCached(node, types.NodeSubnetsAnnotation, updateCache)
 	return newNodeAnnotationState(node.Name, networkIDs, networkIDsErr, tunnelIDs, tunnelIDsErr, l3GatewayConfigs, l3GatewayConfigsErr, subnets, subnetsErr)
