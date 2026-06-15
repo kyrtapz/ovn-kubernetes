@@ -730,28 +730,63 @@ func (b *BridgeConfiguration) commonFlows(hostSubnets []*net.IPNet) ([]string, e
 				nodetypes.DefaultOpenFlowCookie, netConfig.OfPortPatch))
 	}
 
-	// Restrict broadcast ARP/NDP from UDN patch ports to uplink + LOCAL only.
-	// Without this, broadcast ARP from OVN (GARPs, ARP requests) floods via NORMAL
-	// to all patch ports on breth0, causing O(N) resubmits through the OVN pipeline
-	// that exceed the OVS 4096 resubmit limit at ~35 UDNs.
-	// Only UDN (non-default) patch ports need restriction — the default network's
-	// single patch port doesn't contribute to the fan-out problem.
+	// Restrict broadcast ARP/NDP to prevent NORMAL from flooding all patch ports.
+	// Each UDN ext switch adds ~117 resubmits per broadcast; at ~35 UDNs the OVS
+	// 4096 resubmit limit is exceeded. Direct each source to only the ports it needs:
+	//   UDN patch (pri 15)    → uplink (ARP responder at pri 40 answers first if neighbor known)
+	//   default patch (pri 45) → uplink
+	//   uplink (pri 45)        → default patch + LOCAL (OVN handles; kernel maintains neigh table)
+	//   LOCAL (pri 45)         → uplink
+	// Priority 45 for non-UDN sources ensures they take precedence over ARP responder
+	// flows (pri 40), so uplink/LOCAL/default-patch ARPs are forwarded, not proxy-answered.
 	if ofPortPhys != "" {
+		var defaultPatchPort string
 		for _, netConfig := range b.patchedNetConfigs() {
 			if netConfig.IsDefaultNetwork() {
+				defaultPatchPort = netConfig.OfPortPatch
 				continue
 			}
 			if config.IPv4Mode {
 				dftFlows = append(dftFlows,
 					fmt.Sprintf("cookie=%s, priority=15, table=0, in_port=%s, dl_dst=ff:ff:ff:ff:ff:ff, arp, "+
-						"actions=output:%s,output:%s",
-						nodetypes.DefaultOpenFlowCookie, netConfig.OfPortPatch, ofPortPhys, ofPortHost))
+						"actions=output:%s",
+						nodetypes.DefaultOpenFlowCookie, netConfig.OfPortPatch, ofPortPhys))
 			}
 			if config.IPv6Mode {
 				dftFlows = append(dftFlows,
 					fmt.Sprintf("cookie=%s, priority=15, table=0, in_port=%s, icmp6, icmp_type=135, "+
+						"actions=output:%s",
+						nodetypes.DefaultOpenFlowCookie, netConfig.OfPortPatch, ofPortPhys))
+			}
+		}
+		if defaultPatchPort != "" {
+			if config.IPv4Mode {
+				dftFlows = append(dftFlows,
+					fmt.Sprintf("cookie=%s, priority=45, table=0, in_port=%s, dl_dst=ff:ff:ff:ff:ff:ff, arp, "+
+						"actions=output:%s",
+						nodetypes.DefaultOpenFlowCookie, defaultPatchPort, ofPortPhys))
+				dftFlows = append(dftFlows,
+					fmt.Sprintf("cookie=%s, priority=45, table=0, in_port=%s, dl_dst=ff:ff:ff:ff:ff:ff, arp, "+
 						"actions=output:%s,output:%s",
-						nodetypes.DefaultOpenFlowCookie, netConfig.OfPortPatch, ofPortPhys, ofPortHost))
+						nodetypes.DefaultOpenFlowCookie, ofPortPhys, defaultPatchPort, ofPortHost))
+				dftFlows = append(dftFlows,
+					fmt.Sprintf("cookie=%s, priority=45, table=0, in_port=%s, dl_dst=ff:ff:ff:ff:ff:ff, arp, "+
+						"actions=output:%s",
+						nodetypes.DefaultOpenFlowCookie, ofPortHost, ofPortPhys))
+			}
+			if config.IPv6Mode {
+				dftFlows = append(dftFlows,
+					fmt.Sprintf("cookie=%s, priority=45, table=0, in_port=%s, icmp6, icmp_type=135, "+
+						"actions=output:%s",
+						nodetypes.DefaultOpenFlowCookie, defaultPatchPort, ofPortPhys))
+				dftFlows = append(dftFlows,
+					fmt.Sprintf("cookie=%s, priority=45, table=0, in_port=%s, icmp6, icmp_type=135, "+
+						"actions=output:%s,output:%s",
+						nodetypes.DefaultOpenFlowCookie, ofPortPhys, defaultPatchPort, ofPortHost))
+				dftFlows = append(dftFlows,
+					fmt.Sprintf("cookie=%s, priority=45, table=0, in_port=%s, icmp6, icmp_type=135, "+
+						"actions=output:%s",
+						nodetypes.DefaultOpenFlowCookie, ofPortHost, ofPortPhys))
 			}
 		}
 	}

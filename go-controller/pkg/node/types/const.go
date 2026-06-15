@@ -24,6 +24,9 @@ const (
 	// Temp workaround until OVN has native supported for silencing GARPs on startup.
 	// https://issues.redhat.com/browse/FDP-1537
 	GARPCookie = "0x0305"
+	// ARPProxyCookie identifies ARP responder flows on the host OVS bridge
+	// that answer ARP requests for known neighbors locally.
+	ARPProxyCookie = "0x0306"
 	// CtMarkHost is the conntrack mark value for host traffic
 	CtMarkHost = "0x2"
 )

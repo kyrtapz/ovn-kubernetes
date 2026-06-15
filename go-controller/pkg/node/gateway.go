@@ -57,6 +57,7 @@ type gateway struct {
 	nodePortWatcher      informer.ServiceAndEndpointsEventHandler
 	openflowManager      *openflowManager
 	nodeIPManager        *addressManager
+	arpProxy             *arpProxyManager
 	bridgeEIPAddrManager *egressip.BridgeEIPAddrManager
 	initFunc             func() error
 	readyFunc            func() (bool, error)
@@ -349,6 +350,10 @@ func (g *gateway) Start() error {
 
 	if g.nodeIPManager != nil {
 		g.nodeIPManager.Run(g.stopChan, g.wg)
+	}
+
+	if g.arpProxy != nil {
+		g.arpProxy.Run(g.stopChan, g.wg)
 	}
 
 	return nil

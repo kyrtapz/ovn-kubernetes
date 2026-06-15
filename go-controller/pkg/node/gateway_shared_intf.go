@@ -1822,6 +1822,10 @@ func newGateway(
 			return err
 		}
 
+		if config.IsModeFull() {
+			gw.arpProxy = newARPProxyManager(gw.openflowManager, gwBridge)
+		}
+
 		// resync flows on IP change
 		gw.nodeIPManager.AddOnAddressesChangedHandler(func() {
 			klog.V(5).Info("Node addresses changed, re-syncing bridge flows")
